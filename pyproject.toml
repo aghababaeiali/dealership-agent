@@ -34,6 +34,11 @@ dev = [
     "faker>=30.8",
     "pre-commit>=4.0",
 ]
+data = [
+    "kaggle>=1.6",
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -65,6 +70,10 @@ namespace_packages = true
 
 [[tool.mypy.overrides]]
 module = "sentence_transformers.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kaggle.*", "pandas.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
