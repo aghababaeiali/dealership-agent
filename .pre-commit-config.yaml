@@ -13,6 +13,9 @@ repos:
         additional_dependencies:
           - pydantic>=2.9
           - pydantic-settings>=2.6
+          - sqlalchemy>=2.0
+          - alembic>=1.13
+          - pgvector>=0.3
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

@@ -73,7 +73,7 @@ module = "sentence_transformers.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["kaggle.*", "pandas.*"]
+module = ["kaggle.*", "pandas.*", "pgvector.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
