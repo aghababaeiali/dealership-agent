@@ -36,7 +36,21 @@ This distinction is never obscured in code, documentation, or output.
 
 ## Local Setup
 
-TODO
+1. Install [uv](https://docs.astral.sh/uv/), then run `make install`
+   (`uv sync`) to create `.venv` from `uv.lock`.
+2. Copy `.env.example` to `.env` and fill in values (random secrets for
+   Langfuse, local Postgres credentials; real `GROQ_API_KEY` and Langfuse
+   project keys must come from those services, not fabricated).
+3. `make up` (`docker compose up -d`) starts Postgres (with pgvector) and a
+   self-hosted Langfuse instance plus its own Postgres.
+   - Verified: `pgvector/pgvector:pg16` boots healthy and
+     `CREATE EXTENSION IF NOT EXISTS vector;` succeeds (extension version
+     0.8.6 at time of writing).
+   - Verified: `langfuse/langfuse:2` serves the UI at `http://localhost:3000`
+     (HTTP 200) with no additional services (no ClickHouse/Redis/MinIO
+     required for this image version).
+4. `make down` (`docker compose down`) stops and removes the containers and
+   network cleanly.
 
 ## Testing
 
