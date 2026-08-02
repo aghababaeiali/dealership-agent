@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / tooling
+.vscode/
+.idea/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Data files (real datasets / generated data are not committed)
+*.parquet
+*.csv
+!tests/**/*.csv
+!tests/**/*.parquet
+!evals/**/*.csv
+
+# Terraform
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/.terraform.lock.hcl
+infra/terraform/**/*.tfvars
+!infra/terraform/**/*.tfvars.example
+
+# Claude Code local settings
+.claude/settings.local.json
