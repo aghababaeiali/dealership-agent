@@ -14,6 +14,7 @@ from typing import Any
 
 import structlog
 
+from dealership_agent.agents.degradation import compute_degradation
 from dealership_agent.agents.pricing import derive_price_filters
 from dealership_agent.agents.prompts import (
     ACCOUNT_AGENT_SYSTEM_PROMPT,
@@ -166,28 +167,59 @@ def make_merge_node() -> Node:
     return merge_node
 
 
-def any_result_hit_cap(state: GraphState) -> bool:
+def any_result_needs_escalation(state: GraphState) -> bool:
+    """True if a sub-agent's loop ended without any answer at all - the
+    iteration cap, an LLM call failure, or the token budget guard firing
+    (see agents/state.py's ToolLoopResult) - as opposed to a tool error
+    the loop was able to recover from and still produce an answer for.
+    Only the former needs escalation; the latter is handled by honest
+    degradation in synthesis (Part C)."""
     for key in ("sales_result", "account_result"):
         result: ToolLoopResult | None = state.get(key)  # type: ignore[assignment]
-        if result is not None and result.get("hit_cap"):
+        if result is not None and (
+            result.get("hit_cap") or result.get("llm_call_failed") or result.get("hit_budget_guard")
+        ):
             return True
     return False
 
 
+def _escalation_cause(state: GraphState) -> tuple[str, str] | None:
+    """Describe *which* of the three no-answer causes (see
+    any_result_needs_escalation) fired, per sub-agent, so the escalation
+    record and the customer-facing framing are specific rather than a
+    generic "something went wrong" - or None if escalation wasn't
+    triggered by a loop failure at all (e.g. the customer just asked for
+    a human)."""
+    causes: list[str] = []
+    result_labels = (
+        ("sales_result", "the sales lookup"),
+        ("account_result", "the account lookup"),
+    )
+    for key, label in result_labels:
+        result: ToolLoopResult | None = state.get(key)  # type: ignore[assignment]
+        if result is None:
+            continue
+        if result.get("hit_cap"):
+            causes.append(f"{label} reached its tool-call limit without finding an answer")
+        if result.get("llm_call_failed"):
+            causes.append(f"{label} hit a technical issue reaching the language model")
+        if result.get("hit_budget_guard"):
+            causes.append(f"{label}'s conversation grew too large to continue safely")
+    if not causes:
+        return None
+    summary = (
+        "The assistant could not fully resolve the customer's request: "
+        + "; ".join(causes)
+        + ". Escalating rather than failing silently."
+    )
+    return summary, "tool_loop_could_not_complete"
+
+
 def make_escalate_node(account_agent: SubAgent) -> Node:
     async def escalate_node(state: GraphState) -> dict[str, Any]:
-        if any_result_hit_cap(state):
-            # Covers two distinct triggers that both return hit_cap=True
-            # (see tool_loop.py): the iteration cap, or an LLM provider
-            # call failing outright (rate limit, timeout) - either way,
-            # the sub-agent could not produce an answer and must escalate
-            # rather than crash the turn or loop forever.
-            summary = (
-                "The assistant could not resolve the customer's request - either it "
-                "reached its tool-call limit, or a technical issue prevented it from "
-                "continuing - and is escalating rather than failing silently."
-            )
-            reason = "tool_loop_could_not_complete"
+        cause = _escalation_cause(state)
+        if cause is not None:
+            summary, reason = cause
         else:
             summary = state.get("escalate_summary") or "Customer requested human assistance."
             reason = state.get("escalate_reason") or "customer_requested"
@@ -227,20 +259,45 @@ def make_clarify_node() -> Node:
     return clarify_node
 
 
+def _build_synthesis_messages(
+    state: GraphState, *, degradation_note: str | None = None
+) -> list[Message]:
+    payload = {
+        "sales": state.get("sales_result"),
+        "account": state.get("account_result"),
+        "escalation": state.get("escalate_result"),
+    }
+    messages = [
+        Message(role="system", content=SYNTHESIS_SYSTEM_PROMPT),
+        *state["messages"],
+        Message(role="user", content=f"Agent results: {json.dumps(payload, default=str)}"),
+    ]
+    if degradation_note:
+        messages.append(Message(role="user", content=degradation_note))
+    return messages
+
+
+def _degradation_note(reasons: list[str]) -> str:
+    return (
+        "Internal note, do not quote verbatim: this turn did not fully complete "
+        f"({', '.join(reasons)}). If this means part of the customer's request "
+        "could not be answered, you MUST say so plainly in your reply and offer "
+        "to try again or escalate - never present partial or missing results as "
+        "if they were complete."
+    )
+
+
 def make_synthesis_node(llm: LLMProvider) -> Node:
     async def synthesis_node(state: GraphState) -> dict[str, Any]:
         settings = get_settings()
-        payload = {
-            "sales": state.get("sales_result"),
-            "account": state.get("account_result"),
-            "escalation": state.get("escalate_result"),
-        }
-        llm_messages = [
-            Message(role="system", content=SYNTHESIS_SYSTEM_PROMPT),
-            *state["messages"],
-            Message(role="user", content=f"Agent results: {json.dumps(payload, default=str)}"),
-        ]
+        # Part C: computed from what actually happened this turn, not
+        # from anything the model says - fed into the prompt so synthesis
+        # is *told*, in plain terms, when it must be honest about an
+        # incomplete result rather than left to notice on its own.
+        degraded, reasons = compute_degradation(state)
+        note = _degradation_note(reasons) if degraded else None
+        llm_messages = _build_synthesis_messages(state, degradation_note=note)
         response = llm.complete(llm_messages, model=settings.llm_model_synthesis)
-        return {"final_response": response}
+        return {"final_response": response, "degraded": degraded, "degradation_reasons": reasons}
 
     return synthesis_node

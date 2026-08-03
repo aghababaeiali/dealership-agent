@@ -59,3 +59,13 @@ class GraphState(TypedDict, total=False):
     escalate_result: dict[str, Any] | None
 
     final_response: str | None
+    # Step 7 Part C: this turn's response shape until a FastAPI edge exists
+    # to formalize it. `degraded` is true if anything short of a fully
+    # clean run happened (an LLM call failed, a tool errored, the loop
+    # capped, the token budget guard fired, or an action-claim violation
+    # was corrected/replaced) - `degradation_reasons` names each one, so
+    # monitoring can alert on specific failure modes rather than a single
+    # opaque flag. `final_response`'s natural-language text is for the
+    # customer; these two fields are for monitoring, never shown raw.
+    degraded: bool
+    degradation_reasons: list[str]

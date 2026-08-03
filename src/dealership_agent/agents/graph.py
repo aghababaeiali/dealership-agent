@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from dealership_agent.agents.nodes import (
-    any_result_hit_cap,
+    any_result_needs_escalation,
     make_account_agent_node,
     make_clarify_node,
     make_escalate_node,
@@ -60,7 +60,7 @@ def _routes_after_router(state: GraphState) -> list[str]:
 
 
 def _route_after_merge(state: GraphState) -> str:
-    return "escalate" if any_result_hit_cap(state) else "synthesis"
+    return "escalate" if any_result_needs_escalation(state) else "synthesis"
 
 
 def build_supervisor_graph(

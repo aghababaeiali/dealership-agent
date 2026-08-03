@@ -46,16 +46,20 @@ _AGENT_PROMPT_MARKERS = {
     "router": "routing classifier",
     "sales": "sales assistant",
     "synthesis": "helpful, honest assistant",
+    "verifier": "strict fact-checker",
 }
 
 
 class _SalesLLMOutage(LLMProvider):
     """A minimal LLMProvider that raises when called for the sales agent
     specifically (simulating a provider-side failure like a rate limit or
-    timeout) and otherwise behaves like a normal scripted fake."""
+    timeout) and otherwise behaves like a normal scripted fake. Tracks
+    calls per agent like FakeLLMProvider does, so tests can inspect
+    exactly what was sent to synthesis/the verifier."""
 
     def __init__(self, responses: dict[str, list[str]]) -> None:
         self._queues = {key: list(value) for key, value in responses.items()}
+        self.calls_by_agent: dict[str, list[list[Message]]] = {key: [] for key in responses}
 
     def complete(self, messages: list[Message], *, model: str) -> str:
         system = messages[0].content if messages and messages[0].role == "system" else ""
@@ -65,6 +69,7 @@ class _SalesLLMOutage(LLMProvider):
         )
         if agent == "sales":
             raise RuntimeError("simulated Groq rate-limit error (413 Payload Too Large)")
+        self.calls_by_agent.setdefault(agent, []).append(messages)
         return self._queues[agent].pop(0)
 
 
@@ -135,6 +140,7 @@ class TestZeroResultsBroadensTheQuery:
                     ),
                 ],
                 "synthesis": ["Here's what I found once I broadened the search."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-zero-results", customer_id=None)
@@ -187,6 +193,7 @@ class TestToolErrorDegradesGracefully:
                     "I ran into a technical issue with that search - could you try "
                     "rephrasing, e.g. with a specific year like 2020?"
                 ],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-tool-error", customer_id=None)
@@ -233,6 +240,7 @@ class TestIterationCapEscalates:
                 "router": [json.dumps({"routes": ["sales"]})],
                 "sales": endless_tool_calls,
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(
@@ -275,6 +283,7 @@ class TestLLMProviderErrorEscalates:
             {
                 "router": [json.dumps({"routes": ["sales"]})],
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(
@@ -287,7 +296,11 @@ class TestLLMProviderErrorEscalates:
 
         sales_result = result["sales_result"]
         assert sales_result is not None
-        assert sales_result["hit_cap"] is True
+        # Step 7 split the old collapsed hit_cap semantics into three
+        # distinct fields - an LLM call failure is llm_call_failed, not
+        # hit_cap, even though both still route to escalation the same way.
+        assert sales_result["llm_call_failed"] is True
+        assert sales_result["hit_cap"] is False
         assert sales_result["final_answer"] is None
         assert sales_result["tool_calls"] == []
 
@@ -297,6 +310,67 @@ class TestLLMProviderErrorEscalates:
         assert (
             result["final_response"]
             == "I've escalated this to a human agent who will follow up shortly."
+        )
+
+
+class TestFirstCallFailureIsHonestNotConfidentlyEmpty:
+    """Step 7, Part C4: Step 6's live conversation 1 happened to get lucky
+    - the LLM call failed on iteration *2*, after a real search had
+    already returned real results, so synthesis had something to work
+    with and the customer never noticed anything went wrong. This forces
+    the failure on the very *first* call instead, so there is nothing to
+    fall back on, and checks the design is structurally honest about it -
+    not just hoping the model notices on its own."""
+
+    async def test_first_call_failure_is_surfaced_to_synthesis_and_stated_honestly(
+        self,
+    ) -> None:
+        # _SalesLLMOutage raises unconditionally for the sales agent, so
+        # the very first call already fails - no "sales" queue needed at
+        # all, unlike TestLLMProviderErrorEscalates which shares this
+        # same provider but for a bound-identity conversation.
+        outage_llm = _SalesLLMOutage(
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "synthesis": [
+                    "I wasn't able to search for vehicles just now due to a technical "
+                    "issue - I don't have any results to share yet. Would you like me to try again?"
+                ],
+                "verifier": [json.dumps({"claims": []})],
+            }
+        )
+        identity = RequestIdentity(session_id="sess-first-call-failure", customer_id=None)
+
+        result = await run_turn(
+            outage_llm,
+            identity,
+            [Message(role="user", content="I'm looking for a cheap family SUV")],
+        )
+
+        sales_result = result["sales_result"]
+        assert sales_result is not None
+        assert sales_result["llm_call_failed"] is True
+        assert sales_result["tool_calls"] == []
+        assert sales_result["final_answer"] is None
+
+        # Structural check (Part C1/C2): the failure must be tracked in
+        # state and fed into synthesis's own prompt, not left for the
+        # model to somehow infer on its own.
+        assert result["degraded"] is True
+        assert "sales_llm_call_failed" in result["degradation_reasons"]
+
+        synthesis_calls = outage_llm.calls_by_agent.get("synthesis", [])
+        assert len(synthesis_calls) == 1
+        synthesis_prompt_text = " ".join(m.content for m in synthesis_calls[0])
+        assert "did not fully complete" in synthesis_prompt_text
+        assert "sales_llm_call_failed" in synthesis_prompt_text
+
+        # The scripted answer is honest about having nothing, not a
+        # confident empty non-answer - this asserts the wiring lets that
+        # honesty through unchanged.
+        assert result["final_response"] == (
+            "I wasn't able to search for vehicles just now due to a technical "
+            "issue - I don't have any results to share yet. Would you like me to try again?"
         )
 
 
@@ -327,6 +401,7 @@ class TestEscalationWithNoAuthenticatedCustomer:
                 "router": [json.dumps({"routes": ["sales"]})],
                 "sales": endless_tool_calls,
                 "synthesis": ["I'm having trouble with that request - please contact support."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-anon-cap-hit", customer_id=None)
@@ -375,6 +450,7 @@ class TestMultiStepToolChain:
                     ),
                 ],
                 "synthesis": ["Here's a matching SUV and our warranty policy for it."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-multi-step", customer_id=None)
