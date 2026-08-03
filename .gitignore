@@ -31,6 +31,10 @@ ENV/
 .env.*
 !.env.example
 
+# Dev-only JWT keypair (scripts/mint_dev_token.py) - never committed
+*.pem
+dev_keys/
+
 # OS
 .DS_Store
 Thumbs.db

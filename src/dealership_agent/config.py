@@ -15,8 +15,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     jwt_secret_key: str = ""
-    jwt_algorithm: str = "HS256"
+    # Step 9, Part B: RS256, not the symmetric HS256 default from earlier
+    # steps - asymmetric so the API only ever needs the public key to
+    # verify, and only a separate signing party (or, in dev, the
+    # scripts/mint_dev_token.py script) ever holds the private key.
+    jwt_algorithm: str = "RS256"
     jwt_access_token_expire_minutes: int = 30
+    # PEM-encoded RSA public key used to verify incoming tokens. Read
+    # from a file path (never inlined in .env - multi-line PEM content
+    # in a single env var is exactly the kind of secret-handling
+    # friction CLAUDE.md's "no secrets in code" is easiest to honor by
+    # avoiding entirely).
+    jwt_public_key_path: str = ""
+    # Dev-only: the matching private key, used exclusively by
+    # scripts/mint_dev_token.py, never read by the running API. That
+    # script refuses to run at all when app_env == "production".
+    jwt_private_key_path: str = ""
+    jwt_issuer: str = "dealership-agent"
+    jwt_audience: str = "dealership-agent-api"
+
+    # Step 9, Part B4: in-process rate limiting (no Redis/external
+    # service - CLAUDE.md's anti-over-engineering rules and the
+    # single-process modular-monolith deployment target both point the
+    # same way). Fixed-window counters, reset every window.
+    rate_limit_per_customer_per_minute: int = 20
+    rate_limit_global_per_minute: int = 200
 
     # App role: the application connects as this role. RLS policies apply to
     # it. It must never be granted BYPASSRLS. See db/rls.py.

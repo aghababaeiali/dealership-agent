@@ -228,3 +228,37 @@ class Escalation(Base):
     reason: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     resolved_at: Mapped[datetime | None]
+
+
+class Conversation(Base):
+    """A multi-turn chat conversation (Step 9, Part B3). RLS-protected -
+    only authenticated customers get persisted history; an anonymous
+    (Sales Agent, no login) turn is stateless and not written here at
+    all, since RLS's fail-closed design means an unauthenticated session
+    could never read it back anyway (see CUSTOMER_ID_SCOPE)."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_ref: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class ConversationMessage(Base):
+    """One turn's message within a conversation. RLS-protected via the
+    parent conversation (same pattern as order_status_history via
+    orders) - this table has no customer_id column of its own."""
+
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
