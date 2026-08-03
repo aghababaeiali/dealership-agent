@@ -111,6 +111,44 @@ class VehicleEmbedding(Base):
     )
 
 
+class PolicyChunk(Base):
+    """A section-level chunk of a hand-authored policy document
+    (data/policies/), embedded for search_policy_docs. Public data, no RLS.
+
+    Unlike vehicles/vehicle_embeddings, chunk text and its embedding live
+    in one table - policy chunks are small, static, and re-generated
+    wholesale on each ingestion run rather than incrementally updated.
+    """
+
+    __tablename__ = "policy_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    doc_slug: Mapped[str] = mapped_column(String(128), index=True)
+    doc_title: Mapped[str] = mapped_column(String(256))
+    section_heading: Mapped[str | None] = mapped_column(String(256))
+    chunk_index: Mapped[int]
+    content: Mapped[str] = mapped_column(Text)
+    # True for documents under a superseded policy version (e.g.
+    # returns-2024-superseded.md) - search_policy_docs must down-rank or
+    # exclude these relative to current content, never return them above
+    # the current version.
+    is_superseded: Mapped[bool] = mapped_column(default=False)
+    # Same 384-dim contract as vehicle_embeddings.embedding.
+    embedding: Mapped[list[float]] = mapped_column(Vector(384))
+    model_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (
+        Index(
+            "ix_policy_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+
 class Customer(Base):
     """Synthetic customer records. RLS-protected."""
 

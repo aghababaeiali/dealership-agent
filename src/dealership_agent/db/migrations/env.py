@@ -10,6 +10,7 @@ from dealership_agent.db.models import (  # noqa: F401  (registers tables on Bas
     Escalation,
     Order,
     OrderStatusHistory,
+    PolicyChunk,
     TestDriveBooking,
     Vehicle,
     VehicleEmbedding,

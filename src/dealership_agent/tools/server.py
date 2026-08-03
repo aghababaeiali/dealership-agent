@@ -21,6 +21,7 @@ import structlog
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy import text
 
+from dealership_agent.retrieval.policy_search import search_policy_docs as _search_policy_docs
 from dealership_agent.retrieval.search import search_listings as _search_listings
 from dealership_agent.tools.identity import get_current_identity
 from dealership_agent.tools.scope import customer_scoped_connection
@@ -100,8 +101,11 @@ def search_listings(
 @_log_tool_call
 def search_policy_docs(query: str, limit: int = 5) -> list[dict[str, Any]]:
     """Search hand-authored dealership policy documents (warranty, returns,
-    financing). Stub: policy docs have not been ingested yet."""
-    return []
+    financing, trade-in, delivery, service, fees, test drives). Read-only,
+    no customer data. Superseded policy versions are down-ranked below
+    current ones, never returned above them."""
+    results = _search_policy_docs(query, limit=limit)
+    return [r.model_dump() for r in results]
 
 
 @server.tool()
