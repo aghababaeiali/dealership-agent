@@ -13,7 +13,10 @@ _AGENT_PROMPT_MARKERS = {
     "sales": "sales assistant",
     "account": "account assistant",
     "synthesis": "helpful, honest assistant",
-    "verifier": "strict fact-checker",
+    # Shared by both of action_claims.py's stages (Step 8, Part B) - stage 1
+    # (detection) and stage 2 (substantiation) route to the same "verifier"
+    # queue, in whichever order check_draft actually calls them.
+    "verifier": "customer service draft reply",
 }
 
 

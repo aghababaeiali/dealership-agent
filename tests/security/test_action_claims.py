@@ -19,7 +19,11 @@ agents/nodes.py::make_verify_claims_node) needs to get right:
 
 Runs against the real MCP stdio transport and real Postgres, no live LLM
 calls - FakeLLMProvider scripts the verifier's responses too now (see
-tests/conftest.py's "verifier" queue).
+tests/conftest.py's "verifier" queue). Step 8, Part B split verification
+into two calls per check (stage 1 detection, then stage 2 substantiation
+only if stage 1 fires) - each draft below deliberately contains
+action-related vocabulary so the Part C1 keyword pre-check doesn't skip
+straight to CLEAN, letting these tests exercise the real two-stage flow.
 """
 
 import json
@@ -115,7 +119,14 @@ class TestFalseHandoffClaimWithNoEscalation:
                     FALSE_HANDOFF_CLAIM,
                     "Here are some reliable sedans I found for you.",
                 ],
+                # Draft check: stage 1 detects a claim, stage 2 finds it
+                # unsubstantiated. The regenerated draft ("Here are some
+                # reliable sedans...") mentions no action vocabulary at
+                # all, so its recheck is skipped by the Part C1 keyword
+                # pre-check before either stage runs - no further
+                # "verifier" entries are consumed.
                 "verifier": [
+                    json.dumps({"action_claim_detected": True}),
                     json.dumps(
                         {
                             "claims": [
@@ -127,7 +138,6 @@ class TestFalseHandoffClaimWithNoEscalation:
                             ]
                         }
                     ),
-                    json.dumps({"claims": []}),
                 ],
             }
         )
@@ -168,7 +178,11 @@ class TestFalseHandoffClaimWithNoEscalation:
                     json.dumps({"action": "final", "answer": "Found some reliable sedans."}),
                 ],
                 "synthesis": [FALSE_HANDOFF_CLAIM, FALSE_HANDOFF_CLAIM],
+                # Same claim both times (draft, then regenerated) - each
+                # check is a stage 1 detection + stage 2 substantiation
+                # pair, so 4 entries total.
                 "verifier": [
+                    json.dumps({"action_claim_detected": True}),
                     json.dumps(
                         {
                             "claims": [
@@ -180,6 +194,7 @@ class TestFalseHandoffClaimWithNoEscalation:
                             ]
                         }
                     ),
+                    json.dumps({"action_claim_detected": True}),
                     json.dumps(
                         {
                             "claims": [
@@ -227,6 +242,7 @@ class TestHandoffClaimWithRealEscalation:
                 ],
                 "synthesis": [FALSE_HANDOFF_CLAIM],
                 "verifier": [
+                    json.dumps({"action_claim_detected": True}),
                     json.dumps(
                         {
                             "claims": [
@@ -237,7 +253,7 @@ class TestHandoffClaimWithRealEscalation:
                                 }
                             ]
                         }
-                    )
+                    ),
                 ],
             }
         )
@@ -276,7 +292,11 @@ class TestInformationalAnswerIsNeverFlagged:
                     ),
                 ],
                 "synthesis": ["We offer a 90-day/4,000-mile limited powertrain warranty."],
-                "verifier": [json.dumps({"claims": []})],
+                # No "verifier" queue at all: this draft mentions no
+                # action vocabulary, so Part C1's keyword pre-check must
+                # skip verification entirely - if either stage were
+                # called anyway, FakeLLMProvider would raise on the
+                # missing queue, failing this test loudly.
             }
         )
         identity = RequestIdentity(session_id="sess-informational", customer_id=None)
@@ -331,6 +351,7 @@ class TestConversation3Reproduction:
                     "could you share it, or I can list your recent orders?",
                 ],
                 "verifier": [
+                    json.dumps({"action_claim_detected": True}),
                     json.dumps(
                         {
                             "claims": [
@@ -342,7 +363,6 @@ class TestConversation3Reproduction:
                             ]
                         }
                     ),
-                    json.dumps({"claims": []}),
                 ],
             }
         )

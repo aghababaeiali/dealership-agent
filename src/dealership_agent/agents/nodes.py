@@ -18,8 +18,8 @@ from dealership_agent.agents.action_claims import (
     CORRECTION_INSTRUCTION_TEMPLATE,
     SAFE_FALLBACK_TEXT,
     build_evidence_summary,
+    check_draft,
     format_violations,
-    verify_action_claims,
 )
 from dealership_agent.agents.degradation import compute_degradation
 from dealership_agent.agents.pricing import derive_price_filters
@@ -314,10 +314,12 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
     """Second, independent pass over synthesis's draft reply (Part A2):
     checks for ACTION CLAIMS (a human handoff, a cancellation, a booking,
     a refund, or any other state-changing claim) that aren't backed by a
-    real tool result, using the cheap classifier model against this
-    turn's actual evidence (agents/action_claims.py). Regenerates once
-    with an explicit correction if a violation is found; replaces with a
-    safe deterministic fallback if the regenerated draft still has one.
+    real tool result, via agents/action_claims.py::check_draft (Step 8,
+    Part B: a cheap keyword pre-check, then claim detection, then
+    substantiation - most drafts never reach the second or third LLM
+    call). Regenerates once with an explicit correction if a violation is
+    found; replaces with a safe deterministic fallback if the regenerated
+    draft still has one.
     """
 
     async def verify_claims_node(state: GraphState) -> dict[str, Any]:
@@ -325,26 +327,22 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
         draft = state.get("final_response") or ""
         evidence = build_evidence_summary(state)
 
-        claims = verify_action_claims(llm, settings.llm_model_classifier, draft, evidence)
-        unsubstantiated: list[Any] | None = None
-        if claims is not None:
-            unsubstantiated = [c for c in claims if not c.get("substantiated")]
-            if not unsubstantiated:
-                return {}
-            violation_text = format_violations(unsubstantiated)
-        else:
-            # Fails CLOSED (CLAUDE.md's identity philosophy, applied
-            # here too): the verifier's own output was unparseable, so
-            # the draft is unverifiable - treated the same as finding a
-            # real violation, never as "no claims".
+        outcome = check_draft(llm, settings.llm_model_classifier, draft, evidence)
+        if outcome["label"] == "CLEAN":
+            return {}
+
+        if outcome["unparseable"]:
             violation_text = (
                 "- the fact-check itself could not be completed, so no "
                 "claim in this draft can be verified as true"
             )
+        else:
+            violation_text = format_violations(outcome["claims"])
 
         logger.warning(
             "action_claim_violation",
-            claims=unsubstantiated if claims is not None else "verifier_unparseable",
+            claims=outcome["claims"] if not outcome["unparseable"] else "unparseable",
+            unparseable=outcome["unparseable"],
             draft=draft,
             evidence=evidence,
         )
@@ -355,14 +353,10 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
         regenerate_messages.append(Message(role="user", content=correction))
         regenerated = llm.complete(regenerate_messages, model=settings.llm_model_synthesis)
 
-        recheck = verify_action_claims(llm, settings.llm_model_classifier, regenerated, evidence)
-        recheck_unsubstantiated = (
-            [c for c in recheck if not c.get("substantiated")] if recheck is not None else None
-        )
-        recheck_clean = recheck is not None and not recheck_unsubstantiated
+        recheck = check_draft(llm, settings.llm_model_classifier, regenerated, evidence)
         existing_reasons = list(state.get("degradation_reasons") or [])
 
-        if recheck_clean:
+        if recheck["label"] == "CLEAN":
             logger.info("action_claim_corrected", draft=draft, corrected=regenerated)
             return {
                 "final_response": regenerated,
@@ -374,7 +368,8 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
             "action_claim_replaced_with_fallback",
             draft=draft,
             regenerated=regenerated,
-            claims=recheck_unsubstantiated if recheck is not None else "verifier_unparseable",
+            claims=recheck["claims"] if not recheck["unparseable"] else "unparseable",
+            unparseable=recheck["unparseable"],
         )
         return {
             "final_response": SAFE_FALLBACK_TEXT,

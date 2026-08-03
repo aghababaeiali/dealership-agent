@@ -196,7 +196,27 @@ class TestEscalatePath:
                     )
                 ],
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
-                "verifier": [json.dumps({"claims": []})],
+                # This claim mentions action vocabulary ("escalated",
+                # "follow up") so it goes through both stages; there's a
+                # real escalate_result behind it, so stage 2 must say
+                # substantiated.
+                "verifier": [
+                    json.dumps({"action_claim_detected": True}),
+                    json.dumps(
+                        {
+                            "claims": [
+                                {
+                                    "type": "human_handoff",
+                                    "quote": (
+                                        "I've escalated this to a human agent who will "
+                                        "follow up shortly."
+                                    ),
+                                    "substantiated": True,
+                                }
+                            ]
+                        }
+                    ),
+                ],
             }
         )
         identity = RequestIdentity(

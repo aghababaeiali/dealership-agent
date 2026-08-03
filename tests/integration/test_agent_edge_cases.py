@@ -46,7 +46,7 @@ _AGENT_PROMPT_MARKERS = {
     "router": "routing classifier",
     "sales": "sales assistant",
     "synthesis": "helpful, honest assistant",
-    "verifier": "strict fact-checker",
+    "verifier": "customer service draft reply",
 }
 
 
@@ -240,7 +240,26 @@ class TestIterationCapEscalates:
                 "router": [json.dumps({"routes": ["sales"]})],
                 "sales": endless_tool_calls,
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
-                "verifier": [json.dumps({"claims": []})],
+                # This claim mentions action vocabulary and goes through
+                # both stages; a real escalate_result backs it, so stage 2
+                # says substantiated.
+                "verifier": [
+                    json.dumps({"action_claim_detected": True}),
+                    json.dumps(
+                        {
+                            "claims": [
+                                {
+                                    "type": "human_handoff",
+                                    "quote": (
+                                        "I've escalated this to a human agent who will "
+                                        "follow up shortly."
+                                    ),
+                                    "substantiated": True,
+                                }
+                            ]
+                        }
+                    ),
+                ],
             }
         )
         identity = RequestIdentity(
@@ -283,7 +302,26 @@ class TestLLMProviderErrorEscalates:
             {
                 "router": [json.dumps({"routes": ["sales"]})],
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
-                "verifier": [json.dumps({"claims": []})],
+                # This claim mentions action vocabulary and goes through
+                # both stages; a real escalate_result backs it, so stage 2
+                # says substantiated.
+                "verifier": [
+                    json.dumps({"action_claim_detected": True}),
+                    json.dumps(
+                        {
+                            "claims": [
+                                {
+                                    "type": "human_handoff",
+                                    "quote": (
+                                        "I've escalated this to a human agent who will "
+                                        "follow up shortly."
+                                    ),
+                                    "substantiated": True,
+                                }
+                            ]
+                        }
+                    ),
+                ],
             }
         )
         identity = RequestIdentity(
