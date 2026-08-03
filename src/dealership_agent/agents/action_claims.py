@@ -160,3 +160,46 @@ def verify_action_claims(
 
 def format_violations(claims: list[ActionClaim]) -> str:
     return "\n".join(f'- [{c["type"]}] "{c["quote"]}"' for c in claims)
+
+
+class VerificationOutcome(TypedDict):
+    """The stable, single entry-point result shape both nodes.py and the
+    eval harness (evals/run_action_claim_eval.py) consume - kept stable
+    across Step 8's Part B rewrite so the same eval harness measures
+    "before" and "after" without needing to change itself.
+    """
+
+    label: Literal["VIOLATION", "CLEAN"]
+    claims: list[ActionClaim]
+    skipped_precheck: bool
+    stage1_detected: bool | None
+    unparseable: bool
+
+
+def check_draft(
+    llm: LLMProvider, model: str, draft_text: str, evidence: dict[str, Any]
+) -> VerificationOutcome:
+    """Single-stage baseline (Step 7): every draft goes straight to the
+    substantiation classifier. Superseded by Step 8's two-stage version -
+    kept here only as the pre-Step-8 baseline this module's docstring and
+    the Step 8 status report cite; call sites should use the two-stage
+    `check_draft` once Part B lands (this function is replaced in place,
+    not kept side by side, to avoid two diverging implementations).
+    """
+    claims = verify_action_claims(llm, model, draft_text, evidence)
+    if claims is None:
+        return {
+            "label": "VIOLATION",
+            "claims": [],
+            "skipped_precheck": False,
+            "stage1_detected": None,
+            "unparseable": True,
+        }
+    unsubstantiated = [c for c in claims if not c.get("substantiated")]
+    return {
+        "label": "VIOLATION" if unsubstantiated else "CLEAN",
+        "claims": unsubstantiated,
+        "skipped_precheck": False,
+        "stage1_detected": None,
+        "unparseable": False,
+    }
