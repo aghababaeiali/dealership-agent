@@ -144,20 +144,28 @@ def normalize_model(model: str) -> str:
     return model.strip().title()
 
 
-def _boilerplate_segments(texts: pd.Series) -> list[str]:
-    """Split each description into segments and find ones repeated verbatim
-    across many listings - a data-driven stand-in for a fixed phrase list."""
-    segment_counts: Counter[str] = Counter()
+def segment_counts(texts: pd.Series) -> Counter[str]:
+    """Count verbatim occurrences of each description segment across `texts`.
+
+    Exposed (not just the filtered `_boilerplate_segments` list) so
+    audit_cleaning.py can inspect frequencies without duplicating this
+    splitting logic.
+    """
+    counts: Counter[str] = Counter()
     for text in texts.fillna(""):
         segments = re.split(r"<br\s*/?>\s*<br\s*/?>|(?<=[.!])\s+", str(text))
         for segment in segments:
             normalized = segment.strip()
             if len(normalized) >= BOILERPLATE_MIN_LENGTH:
-                segment_counts[normalized] += 1
+                counts[normalized] += 1
+    return counts
 
-    return [
-        segment for segment, count in segment_counts.items() if count >= BOILERPLATE_MIN_OCCURRENCES
-    ]
+
+def _boilerplate_segments(texts: pd.Series) -> list[str]:
+    """Split each description into segments and find ones repeated verbatim
+    across many listings - a data-driven stand-in for a fixed phrase list."""
+    counts = segment_counts(texts)
+    return [segment for segment, count in counts.items() if count >= BOILERPLATE_MIN_OCCURRENCES]
 
 
 def strip_boilerplate(texts: pd.Series) -> tuple[pd.Series, list[str], int]:
