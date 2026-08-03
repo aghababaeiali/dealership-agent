@@ -84,13 +84,13 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "PENDING",
-                "CONFIRMED",
-                "IN_PREPARATION",
-                "READY_FOR_DELIVERY",
-                "DELIVERED",
-                "CANCELLED",
-                "REFUNDED",
+                "pending",
+                "confirmed",
+                "in_preparation",
+                "ready_for_delivery",
+                "delivered",
+                "cancelled",
+                "refunded",
                 name="order_status",
             ),
             nullable=False,
@@ -120,7 +120,7 @@ def upgrade() -> None:
         sa.Column("scheduled_at", sa.DateTime(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("REQUESTED", "CONFIRMED", "COMPLETED", "CANCELLED", name="test_drive_status"),
+            sa.Enum("requested", "confirmed", "completed", "cancelled", name="test_drive_status"),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(["customer_id"], ["customers.id"], ondelete="CASCADE"),
@@ -177,13 +177,13 @@ def upgrade() -> None:
         sa.Column(
             "from_status",
             sa.Enum(
-                "PENDING",
-                "CONFIRMED",
-                "IN_PREPARATION",
-                "READY_FOR_DELIVERY",
-                "DELIVERED",
-                "CANCELLED",
-                "REFUNDED",
+                "pending",
+                "confirmed",
+                "in_preparation",
+                "ready_for_delivery",
+                "delivered",
+                "cancelled",
+                "refunded",
                 name="order_status",
             ),
             nullable=True,
@@ -191,13 +191,13 @@ def upgrade() -> None:
         sa.Column(
             "to_status",
             sa.Enum(
-                "PENDING",
-                "CONFIRMED",
-                "IN_PREPARATION",
-                "READY_FOR_DELIVERY",
-                "DELIVERED",
-                "CANCELLED",
-                "REFUNDED",
+                "pending",
+                "confirmed",
+                "in_preparation",
+                "ready_for_delivery",
+                "delivered",
+                "cancelled",
+                "refunded",
                 name="order_status",
             ),
             nullable=False,
@@ -244,3 +244,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_customers_external_ref"), table_name="customers")
     op.drop_table("customers")
     # ### end Alembic commands ###
+    # Native Postgres enum types are shared across columns/tables and are
+    # not reliably dropped by drop_table when more than one column
+    # references them - drop them explicitly.
+    op.execute("DROP TYPE IF EXISTS order_status")
+    op.execute("DROP TYPE IF EXISTS test_drive_status")

@@ -18,6 +18,12 @@ from sqlalchemy.sql import func
 from dealership_agent.db.base import Base
 
 
+def _enum_values(enum_cls: type[enum.StrEnum]) -> list[str]:
+    """Store the enum's string values ("pending") as DB labels, not the
+    Python member names ("PENDING") - `sa.Enum` uses names by default."""
+    return [member.value for member in enum_cls]
+
+
 class OrderStatus(enum.StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
@@ -33,6 +39,12 @@ class TestDriveStatus(enum.StrEnum):
     CONFIRMED = "confirmed"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+
+
+_order_status_enum = SqlEnum(OrderStatus, name="order_status", values_callable=_enum_values)
+_test_drive_status_enum = SqlEnum(
+    TestDriveStatus, name="test_drive_status", values_callable=_enum_values
+)
 
 
 class Vehicle(Base):
@@ -119,7 +131,8 @@ class Order(Base):
     )
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), index=True)
     status: Mapped[OrderStatus] = mapped_column(
-        SqlEnum(OrderStatus, name="order_status"), default=OrderStatus.PENDING
+        _order_status_enum,
+        default=OrderStatus.PENDING,
     )
     total_amount: Mapped[float] = mapped_column(Numeric(10, 2, asdecimal=False))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -134,10 +147,8 @@ class OrderStatusHistory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), index=True)
-    from_status: Mapped[OrderStatus | None] = mapped_column(
-        SqlEnum(OrderStatus, name="order_status")
-    )
-    to_status: Mapped[OrderStatus] = mapped_column(SqlEnum(OrderStatus, name="order_status"))
+    from_status: Mapped[OrderStatus | None] = mapped_column(_order_status_enum)
+    to_status: Mapped[OrderStatus] = mapped_column(_order_status_enum)
     changed_at: Mapped[datetime] = mapped_column(server_default=func.now())
     note: Mapped[str | None] = mapped_column(Text)
 
@@ -155,7 +166,8 @@ class TestDriveBooking(Base):
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), index=True)
     scheduled_at: Mapped[datetime]
     status: Mapped[TestDriveStatus] = mapped_column(
-        SqlEnum(TestDriveStatus, name="test_drive_status"), default=TestDriveStatus.REQUESTED
+        _test_drive_status_enum,
+        default=TestDriveStatus.REQUESTED,
     )
 
 
