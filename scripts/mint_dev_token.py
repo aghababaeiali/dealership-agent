@@ -22,11 +22,51 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt
+from sqlalchemy import create_engine, text
 
 from dealership_agent.config import get_settings
 
 DEFAULT_PRIVATE_KEY_PATH = "dev_keys/dev_jwt_private.pem"
 DEFAULT_PUBLIC_KEY_PATH = "dev_keys/dev_jwt_public.pem"
+
+
+def _ensure_customer_exists(database_migration_url: str, customer_id: int) -> None:
+    """A minted token is only useful if its subject is a real row -
+    `/chat` persists conversations under `customer_id`, which has a FK
+    constraint to `customers`. Synthetic dev data either way (per
+    CLAUDE.md's Data Honesty section), so this creates a matching
+    customer with the given id if one doesn't already exist, using the
+    owner/migration role - the same role data/scripts/embed_policies.py
+    and scripts/seed_ci_vehicles.py already use for setup work."""
+    engine = create_engine(database_migration_url)
+    with engine.begin() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM customers WHERE id = :id"), {"id": customer_id}
+        ).first()
+        if exists is None:
+            conn.execute(
+                text(
+                    "INSERT INTO customers (id, external_ref, email, full_name) "
+                    "VALUES (:id, :ref, :email, :name)"
+                ),
+                {
+                    "id": customer_id,
+                    "ref": f"dev-token-customer-{customer_id}",
+                    "email": f"dev-token-customer-{customer_id}@example.com",
+                    "name": f"Dev Token Customer {customer_id}",
+                },
+            )
+            # Explicit ids bypass the id column's own sequence - advance it
+            # past the highest existing id so a later INSERT without an
+            # explicit id never collides with one minted here.
+            conn.execute(
+                text(
+                    "SELECT setval(pg_get_serial_sequence('customers', 'id'), "
+                    "(SELECT MAX(id) FROM customers))"
+                )
+            )
+            print(f"Created customer id={customer_id} (synthetic, dev-only)", file=sys.stderr)
+    engine.dispose()
 
 
 def _generate_keypair(private_path: Path, public_path: Path) -> None:
@@ -68,6 +108,8 @@ def main() -> None:
         "--expires-minutes", type=int, default=settings.jwt_access_token_expire_minutes
     )
     args = parser.parse_args()
+
+    _ensure_customer_exists(settings.database_migration_url, args.customer_id)
 
     private_path = Path(settings.jwt_private_key_path or DEFAULT_PRIVATE_KEY_PATH)
     public_path = Path(settings.jwt_public_key_path or DEFAULT_PUBLIC_KEY_PATH)
