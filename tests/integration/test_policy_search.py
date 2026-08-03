@@ -35,9 +35,9 @@ class TestSupersededPolicyDownRanking:
         current_positions = [i for i, r in enumerate(results) if not r.is_superseded]
 
         if superseded_positions and current_positions:
-            assert min(current_positions) < min(
-                superseded_positions
-            ), "A superseded chunk ranked above every non-superseded chunk"
+            assert min(current_positions) < min(superseded_positions), (
+                "A superseded chunk ranked above every non-superseded chunk"
+            )
 
     def test_current_return_window_chunk_is_top_result(self) -> None:
         results = search_policy_docs("how many days do I have to return a car", limit=3)

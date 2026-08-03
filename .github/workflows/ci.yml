@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 06:00 UTC - the `eval` job below is the only one
+    # gated to run on this trigger (Step 9, Part D2).
+    - cron: "0 6 * * 1"
+
+# CLAUDE.md: CI is GitHub Actions with OIDC, no long-lived AWS keys - this
+# workflow needs none, since only BedrockProvider's contract test touches
+# AWS, and that test requires live credentials and is intentionally never
+# run here (see the `eval` job's docstring below for the same reasoning
+# applied to the action-claim eval).
+permissions:
+  contents: read
+
+env:
+  # Bootstrap/owner role - used only by Alembic migrations, which need to
+  # CREATE ROLE / ENABLE ROW LEVEL SECURITY (see db/rls.py). Not the same
+  # role the application connects as.
+  POSTGRES_USER: dealership
+  POSTGRES_PASSWORD: dealership_ci_password
+  POSTGRES_DB: dealership
+  DATABASE_MIGRATION_URL: postgresql+psycopg://dealership:dealership_ci_password@localhost:5432/dealership
+  # Least-privilege app role, created by the RLS migration itself.
+  APP_DB_USER: dealership_app
+  APP_DB_PASSWORD: dealership_app_ci_password
+  DATABASE_URL: postgresql+psycopg://dealership_app:dealership_app_ci_password@localhost:5432/dealership
+  EMBEDDING_MODEL_NAME: sentence-transformers/all-MiniLM-L6-v2
+  APP_ENV: development
+  LLM_PROVIDER: groq
+  JWT_ALGORITHM: RS256
+  JWT_ISSUER: dealership-agent
+  JWT_AUDIENCE: dealership-agent-api
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+  JWT_PUBLIC_KEY_PATH: dev_keys/dev_jwt_public.pem
+  JWT_PRIVATE_KEY_PATH: dev_keys/dev_jwt_private.pem
+  RATE_LIMIT_PER_CUSTOMER_PER_MINUTE: "20"
+  RATE_LIMIT_GLOBAL_PER_MINUTE: "200"
+  MCP_SERVER_HOST: localhost
+  MCP_SERVER_PORT: "8765"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --group data
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --group data
+      - run: uv run mypy .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dealership
+          POSTGRES_PASSWORD: dealership_ci_password
+          POSTGRES_DB: dealership
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dealership -d dealership"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --group data
+      - name: Run migrations (creates the app role + enables RLS)
+        run: uv run alembic upgrade head
+      - name: Embed the hand-authored policy corpus (data/policies/, committed to git)
+        run: uv run python data/scripts/embed_policies.py
+      - name: Seed a small synthetic vehicle catalog
+        # The REAL vehicle dataset (data/scripts/download_listings.py) is
+        # licensed Kaggle data, requiring credentials not available as a
+        # CI secret - see scripts/seed_ci_vehicles.py's docstring. This
+        # inserts a handful of clearly-synthetic rows instead, embedded
+        # with the same self-hosted model, so search/RLS/MCP code paths
+        # are still genuinely exercised against a real Postgres+pgvector
+        # instance.
+        run: uv run python scripts/seed_ci_vehicles.py
+      - name: Generate a dev JWT keypair for auth tests
+        run: uv run python scripts/mint_dev_token.py --customer-id 1 > /dev/null
+      - name: Run unit + integration tests (excludes tests requiring live LLM/AWS credentials)
+        run: uv run pytest tests/unit tests/integration -m "not requires_live_credentials"
+
+  security:
+    # Deliberately a separate job, not a step within `test` - a security
+    # failure must show up as its own distinct, clearly-labeled red X in
+    # the checks list, per this step's explicit instruction, not buried
+    # inside a general "test" job's log.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dealership
+          POSTGRES_PASSWORD: dealership_ci_password
+          POSTGRES_DB: dealership
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dealership -d dealership"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --group data
+      - run: uv run alembic upgrade head
+      - run: uv run python scripts/mint_dev_token.py --customer-id 1 > /dev/null
+      - name: Run the security test suite
+        run: uv run pytest tests/security -m "not requires_live_credentials"
+
+  build:
+    # Builds the Docker image to prove it builds; does not push it
+    # anywhere (no registry credentials configured here at all).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: dealership-agent:ci
+
+  eval:
+    # Step 9, Part D2: the action-claim eval needs a live Groq API key and
+    # makes real, non-deterministic LLM calls - it runs on a schedule and
+    # on manual dispatch only, never on every push/PR (unlike `test`
+    # above, which never touches a real LLM at all - see conftest.py's
+    # FakeLLMProvider).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dealership
+          POSTGRES_PASSWORD: dealership_ci_password
+          POSTGRES_DB: dealership
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dealership -d dealership"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LLM_MODEL_CLASSIFIER: ${{ vars.LLM_MODEL_CLASSIFIER }}
+      LLM_MODEL_SYNTHESIS: ${{ vars.LLM_MODEL_SYNTHESIS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --group data
+      - run: uv run alembic upgrade head
+      - run: uv run python evals/run_action_claim_eval.py
