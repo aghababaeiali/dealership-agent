@@ -52,6 +52,7 @@ htmlcov/
 !tests/**/*.parquet
 !evals/**/*.csv
 data/raw/
+data/processed/
 
 # Terraform
 infra/terraform/**/.terraform/
