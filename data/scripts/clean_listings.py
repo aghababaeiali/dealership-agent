@@ -59,6 +59,7 @@ BOILERPLATE_MIN_LENGTH = 20
 class CleaningStats(TypedDict):
     rows_before: int
     rows_with_null_price: int
+    rows_with_unreliable_price: int
     pii_counts: dict[str, int]
     duplicates_removed: int
     boilerplate_segments_found: int
@@ -68,14 +69,22 @@ class CleaningStats(TypedDict):
 
 
 def compute_price(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive `price` as the KBB fair-price midpoint.
+    """Derive `price` as the KBB fair-price midpoint, and flag rows where
+    that value is a $0.00 sentinel rather than a real price.
 
-    NULL when either bound is missing (~8% of rows) - never imputed.
+    NULL when either bound is missing (~8% of rows) - never imputed. Per
+    docs/DATA_PRICE_AUDIT.md: the source data represents "KBB had no
+    valuation" as price_low = price_high = 0, not NULL. There is a clean
+    gap in the resulting distribution - zero rows priced between $0 and
+    $500 - confirming $0.00 is a sentinel, not a genuine low market price,
+    so it is flagged via `is_price_reliable` rather than treated as NULL
+    (NULL means "unknown"; $0.00 here means "known invalid").
     """
     df = df.copy()
     df["price_low"] = df["kbbFairPriceLow"]
     df["price_high"] = df["kbbFairPriceHigh"]
     df["price"] = (df["price_low"] + df["price_high"]) / 2
+    df["is_price_reliable"] = df["price"] != 0
     return df
 
 
@@ -208,6 +217,7 @@ def clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningStats]:
 
     df = compute_price(df)
     rows_with_null_price = int(df["price"].isna().sum())
+    rows_with_unreliable_price = int((~df["is_price_reliable"]).sum())
 
     df["description_raw"] = df["description"]
     redacted, pii_counts = redact_descriptions(df["description"])
@@ -237,6 +247,7 @@ def clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningStats]:
     stats: CleaningStats = {
         "rows_before": rows_before,
         "rows_with_null_price": rows_with_null_price,
+        "rows_with_unreliable_price": rows_with_unreliable_price,
         "pii_counts": pii_counts,
         "duplicates_removed": duplicates_removed,
         "boilerplate_segments_found": len(boilerplate_segments),
@@ -260,7 +271,10 @@ def _write_report(stats: CleaningStats, out_path: Path) -> None:
         "## Price\n",
         f"- Rows with a null price (KBB range missing): "
         f"**{stats['rows_with_null_price']:,}** "
-        f"({stats['rows_with_null_price'] / stats['rows_before'] * 100:.1f}%)\n",
+        f"({stats['rows_with_null_price'] / stats['rows_before'] * 100:.1f}%)",
+        f"- Rows flagged `is_price_reliable=false` ($0.00 sentinel, see "
+        f"docs/DATA_PRICE_AUDIT.md): **{stats['rows_with_unreliable_price']:,}** "
+        f"({stats['rows_with_unreliable_price'] / stats['rows_before'] * 100:.1f}%)\n",
         "## PII found in `description` (before redaction)\n",
         "| Category | Occurrences |",
         "| --- | --- |",

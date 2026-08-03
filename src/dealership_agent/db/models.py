@@ -67,6 +67,11 @@ class Vehicle(Base):
     price: Mapped[float | None] = mapped_column(Numeric(10, 2, asdecimal=False))
     price_low: Mapped[float | None] = mapped_column(Numeric(10, 2, asdecimal=False))
     price_high: Mapped[float | None] = mapped_column(Numeric(10, 2, asdecimal=False))
+    # False when price/price_low/price_high are the source data's $0.00
+    # sentinel (KBB had no valuation) - see docs/DATA_PRICE_AUDIT.md. Never
+    # cleared or clamped; downstream queries must exclude/mask these rows
+    # explicitly instead, same policy as a NULL price.
+    is_price_reliable: Mapped[bool] = mapped_column(default=True)
     seller_state: Mapped[str | None] = mapped_column(String(2))
     description_raw: Mapped[str | None] = mapped_column(Text)
     description_clean: Mapped[str | None] = mapped_column(Text)

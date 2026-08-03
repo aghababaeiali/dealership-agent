@@ -40,6 +40,7 @@ VEHICLE_COLUMNS = [
     "price",
     "price_low",
     "price_high",
+    "is_price_reliable",
     "seller_state",
     "description_raw",
     "description_clean",

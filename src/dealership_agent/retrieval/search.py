@@ -3,8 +3,12 @@
 No RLS applies here - `vehicles`/`vehicle_embeddings` are public catalog
 data (CLAUDE.md's Core Security Invariant only governs customer-scoped
 tables). Combines pgvector cosine similarity with SQL filters. Rows with a
-NULL price are excluded whenever a price filter is active, and included
-otherwise - price is legitimately unknown for ~8% of listings, not zero.
+NULL price, or with `is_price_reliable=false` (see docs/DATA_PRICE_AUDIT.md
+- a $0.00 sentinel meaning "KBB had no valuation"), are excluded whenever a
+price filter is active, and included otherwise - both cases mean "price is
+not usable", never "free". Their price fields are also masked to None in
+every result, filtered or not, so nothing downstream ever sees the $0.00
+sentinel and mistakes it for a real price.
 """
 
 from __future__ import annotations
@@ -63,11 +67,14 @@ def search_listings(
         "limit": limit,
     }
 
-    # NULL price must be excluded only when a price filter is active - it
-    # means "unknown", not "free", and shouldn't silently match a max-price
-    # search, but an unfiltered search should still surface these listings.
+    # NULL price or is_price_reliable=false must be excluded only when a
+    # price filter is active - either means "unknown"/"invalid", not
+    # "free", and shouldn't silently match a max-price search, but an
+    # unfiltered search should still surface these listings (with price
+    # masked to None below).
     if price_min is not None or price_max is not None:
         conditions.append("v.price IS NOT NULL")
+        conditions.append("v.is_price_reliable = true")
     if price_min is not None:
         conditions.append("v.price >= :price_min")
         params["price_min"] = price_min
@@ -103,7 +110,8 @@ def search_listings(
         SELECT
             v.id, v.external_ref, v.year, v.make, v.model, v.trim,
             v.body_style, v.fuel_type, v.mileage, v.price, v.price_low,
-            v.price_high, v.seller_state, v.description_clean,
+            v.price_high, v.is_price_reliable, v.seller_state,
+            v.description_clean,
             1 - (ve.embedding <=> (:embedding)::vector) AS similarity
         FROM vehicles v
         JOIN vehicle_embeddings ve
@@ -122,4 +130,12 @@ def search_listings(
     else:
         rows = engine_or_conn.execute(sql, params).fetchall()
 
-    return [VehicleSearchResult.model_validate(dict(row._mapping)) for row in rows]
+    results = []
+    for row in rows:
+        data = dict(row._mapping)
+        if not data.pop("is_price_reliable"):
+            data["price"] = None
+            data["price_low"] = None
+            data["price_high"] = None
+        results.append(VehicleSearchResult.model_validate(data))
+    return results
