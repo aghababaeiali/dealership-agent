@@ -1,12 +1,21 @@
-"""C3: session identity lives in graph state and must NEVER appear in any
-prompt sent to the LLM.
+"""C3/B6: session identity lives in graph state and must NEVER appear in any
+prompt sent to the LLM - including tool results that flow back into the
+tool loop and into the synthesis prompt.
 
-Runs a full sample conversation through the supervisor graph (real
-Postgres for the account-lookup tool call, NO live LLM - fake_llm_provider
-returns scripted responses) with a real, specific customer_id, then
-serialises every `Message` sent to `FakeLLMProvider.complete()` across the
-whole run and asserts that customer_id's value never appears in it, in any
-form (raw int, str, or as part of any structured payload).
+Runs a full conversation through `run_turn()` (real MCP stdio transport,
+real Postgres for the account-lookup tool call, NO live LLM -
+fake_llm_provider returns scripted responses) with a real, specific
+customer_id, then serialises:
+
+  1. every `Message` sent to `FakeLLMProvider.complete()` across the whole
+     turn (this now includes tool-loop observations, per B6 - tool
+     results are a new leak surface now that sub-agents run multi-step
+     loops with results fed back into their own message history), and
+  2. the final GraphState itself (sales_result/account_result/
+     escalate_result), since that also gets serialized into the
+     synthesis prompt.
+
+and asserts the customer_id's value never appears in any of it.
 """
 
 import json
@@ -18,8 +27,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from dealership_agent.agents.graph import build_supervisor_graph
-from dealership_agent.agents.state import GraphState
+from dealership_agent.agents.runner import run_turn
 from dealership_agent.config import get_settings
 from dealership_agent.llm.base import Message
 from dealership_agent.tools.identity import RequestIdentity
@@ -87,7 +95,10 @@ def customer_with_order(owner_engine: Engine) -> Iterator[OrderFixture]:
 
 
 def _serialize_all_calls(calls: list[list[Message]]) -> str:
-    """Flatten every Message from every LLM call into one searchable string."""
+    """Flatten every Message from every LLM call (across every agent -
+    router, sales, account, synthesis) into one searchable string. This
+    is exactly what the LLM saw across the whole turn, tool-loop
+    observations included."""
     return json.dumps([[m.model_dump() for m in call] for call in calls])
 
 
@@ -99,22 +110,51 @@ class TestNoIdentityLeaksIntoPrompts:
         order_ref = customer_with_order["order_ref"]
 
         fake = fake_llm_provider(
-            [
-                json.dumps({"route": "account", "order_ref": order_ref}),
-                "Your order is confirmed.",
-            ]
+            {
+                "router": [json.dumps({"routes": ["account"], "order_ref": order_ref})],
+                "account": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "get_order_status",
+                            "arguments": {"order_ref": order_ref},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Your order is confirmed."}),
+                ],
+                "synthesis": ["Your order is confirmed and on track."],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state: GraphState = {
-            "messages": [Message(role="user", content=f"What's the status of order {order_ref}?")],
-            "identity": RequestIdentity(session_id="sess-identity-test", customer_id=customer_id),
-        }
-        result = await graph.ainvoke(state)
+        identity = RequestIdentity(session_id="sess-identity-test", customer_id=customer_id)
+        result = await run_turn(
+            fake,
+            identity,
+            [Message(role="user", content=f"What's the status of order {order_ref}?")],
+        )
 
-        assert result["tool_result"]["order_ref"] == order_ref  # sanity: the run worked
+        # Sanity: the run actually worked and touched the real order -
+        # the tool result (which does carry customer_id server-side, in
+        # the raw DB row shape) is exactly the leak surface B6 worries
+        # about once it's serialized back into a subsequent prompt.
+        account_result = result["account_result"]
+        assert account_result is not None
+        assert account_result["tool_calls"][0]["result"]["order_ref"] == order_ref
 
-        serialized = _serialize_all_calls(fake.calls)
-        assert str(customer_id) not in serialized
+        serialized_prompts = _serialize_all_calls(fake.calls)
+        assert str(customer_id) not in serialized_prompts
+
+        # B6: tool results are a new leak surface - check the raw
+        # GraphState fields that get serialized into the synthesis
+        # prompt too, not just what was already sent to the LLM.
+        serialized_state = json.dumps(
+            {
+                "sales_result": result.get("sales_result"),
+                "account_result": result.get("account_result"),
+                "escalate_result": result.get("escalate_result"),
+            },
+            default=str,
+        )
+        assert str(customer_id) not in serialized_state
 
     async def test_customer_id_never_appears_in_sales_conversation_prompts(
         self, customer_with_order: OrderFixture, fake_llm_provider: type
@@ -124,17 +164,91 @@ class TestNoIdentityLeaksIntoPrompts:
         customer_id = customer_with_order["customer_id"]
 
         fake = fake_llm_provider(
-            [
-                json.dumps({"route": "sales", "sales_intent": "listings"}),
-                "Here are some options for you.",
-            ]
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "sales": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "reliable sedan"},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Here are some options for you."}),
+                ],
+                "synthesis": ["Here are some options for you."],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state: GraphState = {
-            "messages": [Message(role="user", content="Do you have any reliable sedans?")],
-            "identity": RequestIdentity(session_id="sess-identity-sales", customer_id=customer_id),
-        }
-        await graph.ainvoke(state)
+        identity = RequestIdentity(session_id="sess-identity-sales", customer_id=customer_id)
+        result = await run_turn(
+            fake, identity, [Message(role="user", content="Do you have any reliable sedans?")]
+        )
 
-        serialized = _serialize_all_calls(fake.calls)
-        assert str(customer_id) not in serialized
+        serialized_prompts = _serialize_all_calls(fake.calls)
+        assert str(customer_id) not in serialized_prompts
+
+        serialized_state = json.dumps({"sales_result": result.get("sales_result")}, default=str)
+        assert str(customer_id) not in serialized_state
+
+    async def test_customer_id_never_appears_in_multi_scope_prompts_or_results(
+        self, customer_with_order: OrderFixture, fake_llm_provider: type
+    ) -> None:
+        """A cross-scope turn (sales + account in one turn) is the
+        highest-risk case for leakage: the merge/synthesis step
+        serializes both sub-agents' tool_calls into one payload."""
+        customer_id = customer_with_order["customer_id"]
+        order_ref = customer_with_order["order_ref"]
+
+        fake = fake_llm_provider(
+            {
+                "router": [json.dumps({"routes": ["sales", "account"], "order_ref": order_ref})],
+                "sales": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "cheap SUV", "price_max": 18050.0},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Found some cheap SUVs."}),
+                ],
+                "account": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "get_order_status",
+                            "arguments": {"order_ref": order_ref},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Your order is confirmed."}),
+                ],
+                "synthesis": ["Here are some cheap SUVs, and your order is confirmed!"],
+            }
+        )
+        identity = RequestIdentity(session_id="sess-identity-multi", customer_id=customer_id)
+        result = await run_turn(
+            fake,
+            identity,
+            [
+                Message(
+                    role="user",
+                    content="find me a cheap SUV and tell me if my order shipped",
+                )
+            ],
+        )
+
+        account_result = result["account_result"]
+        assert account_result is not None
+        assert account_result["tool_calls"][0]["result"]["order_ref"] == order_ref
+
+        serialized_prompts = _serialize_all_calls(fake.calls)
+        assert str(customer_id) not in serialized_prompts
+
+        serialized_state = json.dumps(
+            {
+                "sales_result": result.get("sales_result"),
+                "account_result": result.get("account_result"),
+            },
+            default=str,
+        )
+        assert str(customer_id) not in serialized_state

@@ -1,8 +1,8 @@
-"""Integration tests for the supervisor graph, run against real Postgres
-(for account_agent/escalate's tool calls) and real vector search (for
-sales_agent), but with NO live LLM calls - the `fake_llm_provider` fixture
-(see tests/conftest.py) returns pre-scripted responses in the exact order
-the graph is expected to call `.complete()`.
+"""Integration tests for the supervisor graph, run against the real MCP
+stdio transport, real Postgres (account_agent/escalate's tool calls), and
+real vector search (sales_agent), but with NO live LLM calls - the
+`fake_llm_provider` fixture (see tests/conftest.py) returns pre-scripted
+responses per agent.
 """
 
 import json
@@ -14,8 +14,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from dealership_agent.agents.graph import build_supervisor_graph
-from dealership_agent.agents.state import GraphState
+from dealership_agent.agents.runner import run_turn
 from dealership_agent.config import get_settings
 from dealership_agent.llm.base import Message
 from dealership_agent.tools.identity import RequestIdentity
@@ -71,31 +70,43 @@ def customer_with_order(owner_engine: Engine) -> Iterator[OrderFixture]:
         conn.execute(text("DELETE FROM vehicles WHERE id = :v"), {"v": vehicle_id})
 
 
-def _initial_state(message: str, identity: RequestIdentity) -> GraphState:
-    return {"messages": [Message(role="user", content=message)], "identity": identity}
-
-
 class TestSalesAgentHappyPath:
     async def test_cheap_suv_query_routes_to_sales_and_returns_listings(
         self, fake_llm_provider: type
     ) -> None:
         fake = fake_llm_provider(
-            [
-                json.dumps({"route": "sales", "sales_intent": "listings"}),
-                "Here are a few affordable, reliable SUVs currently in stock.",
-            ]
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "sales": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "cheap reliable family SUV"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "action": "final",
+                            "answer": "Here are a few affordable, reliable SUVs in stock.",
+                        }
+                    ),
+                ],
+                "synthesis": ["Here are a few affordable, reliable SUVs currently in stock."],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state = _initial_state(
-            "I want a cheap reliable family SUV",
-            RequestIdentity(session_id="sess-sales", customer_id=None),
+        identity = RequestIdentity(session_id="sess-sales", customer_id=None)
+        result = await run_turn(
+            fake, identity, [Message(role="user", content="I want a cheap reliable family SUV")]
         )
-        result = await graph.ainvoke(state)
 
-        assert result["route"] == "sales"
+        assert result["routes"] == ["sales"]
         assert result["price_filters"] == {"price_max": 18_050.00}
-        assert isinstance(result["tool_result"], list)
-        assert len(result["tool_result"]) > 0
+        sales_result = result["sales_result"]
+        assert sales_result is not None
+        assert sales_result["hit_cap"] is False
+        assert len(sales_result["tool_calls"]) == 1
+        assert len(sales_result["tool_calls"][0]["result"]) > 0
         assert (
             result["final_response"]
             == "Here are a few affordable, reliable SUVs currently in stock."
@@ -108,23 +119,35 @@ class TestAccountAgentHappyPath:
     ) -> None:
         order_ref = customer_with_order["order_ref"]
         fake = fake_llm_provider(
-            [
-                json.dumps({"route": "account", "order_ref": order_ref}),
-                "Your order is confirmed and on track.",
-            ]
+            {
+                "router": [json.dumps({"routes": ["account"], "order_ref": order_ref})],
+                "account": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "get_order_status",
+                            "arguments": {"order_ref": order_ref},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Your order is confirmed."}),
+                ],
+                "synthesis": ["Your order is confirmed and on track."],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state = _initial_state(
-            f"What's the status of order {order_ref}?",
-            RequestIdentity(
-                session_id="sess-account", customer_id=customer_with_order["customer_id"]
-            ),
+        identity = RequestIdentity(
+            session_id="sess-account", customer_id=customer_with_order["customer_id"]
         )
-        result = await graph.ainvoke(state)
+        result = await run_turn(
+            fake,
+            identity,
+            [Message(role="user", content=f"What's the status of order {order_ref}?")],
+        )
 
-        assert result["route"] == "account"
-        assert result["tool_result"]["order_ref"] == order_ref
-        assert result["tool_result"]["status"] == "confirmed"
+        assert result["routes"] == ["account"]
+        account_result = result["account_result"]
+        assert account_result is not None
+        assert account_result["tool_calls"][0]["result"]["order_ref"] == order_ref
+        assert account_result["tool_calls"][0]["result"]["status"] == "confirmed"
         assert result["final_response"] == "Your order is confirmed and on track."
 
 
@@ -133,20 +156,23 @@ class TestClarifyPath:
         self, fake_llm_provider: type
     ) -> None:
         fake = fake_llm_provider(
-            [
-                json.dumps(
-                    {
-                        "route": "clarify",
-                        "clarify_question": "Are you asking about a vehicle or an existing order?",
-                    }
-                )
-            ]
+            {
+                "router": [
+                    json.dumps(
+                        {
+                            "routes": ["clarify"],
+                            "clarify_question": (
+                                "Are you asking about a vehicle or an existing order?"
+                            ),
+                        }
+                    )
+                ],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state = _initial_state("help", RequestIdentity(session_id="sess-clarify", customer_id=None))
-        result = await graph.ainvoke(state)
+        identity = RequestIdentity(session_id="sess-clarify", customer_id=None)
+        result = await run_turn(fake, identity, [Message(role="user", content="help")])
 
-        assert result["route"] == "clarify"
+        assert result["routes"] == ["clarify"]
         assert result["final_response"] == "Are you asking about a vehicle or an existing order?"
         # clarify -> END directly; synthesis must not have been called.
         assert len(fake.calls) == 1
@@ -157,29 +183,97 @@ class TestEscalatePath:
         self, customer_with_order: OrderFixture, fake_llm_provider: type
     ) -> None:
         fake = fake_llm_provider(
-            [
-                json.dumps(
-                    {
-                        "route": "escalate",
-                        "escalate_summary": "Customer is upset about a delayed delivery.",
-                        "escalate_reason": "delivery_delay",
-                    }
-                ),
-                "I've escalated this to a human agent who will follow up shortly.",
-            ]
+            {
+                "router": [
+                    json.dumps(
+                        {
+                            "routes": ["escalate"],
+                            "escalate_summary": "Customer is upset about a delayed delivery.",
+                            "escalate_reason": "delivery_delay",
+                        }
+                    )
+                ],
+                "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
+            }
         )
-        graph = await build_supervisor_graph(fake)
-        state = _initial_state(
-            "This is ridiculous, I need to talk to a real person right now",
-            RequestIdentity(
-                session_id="sess-escalate", customer_id=customer_with_order["customer_id"]
-            ),
+        identity = RequestIdentity(
+            session_id="sess-escalate", customer_id=customer_with_order["customer_id"]
         )
-        result = await graph.ainvoke(state)
+        result = await run_turn(
+            fake,
+            identity,
+            [Message(role="user", content="This is ridiculous, I need to talk to a real person")],
+        )
 
-        assert result["route"] == "escalate"
-        assert result["tool_result"]["status"] == "escalated"
+        assert result["routes"] == ["escalate"]
+        escalate_result = result["escalate_result"]
+        assert escalate_result is not None
+        assert escalate_result["status"] == "escalated"
         assert (
             result["final_response"]
             == "I've escalated this to a human agent who will follow up shortly."
+        )
+
+
+class TestMultiScopeRouting:
+    async def test_one_turn_can_touch_both_sales_and_account(
+        self, customer_with_order: OrderFixture, fake_llm_provider: type
+    ) -> None:
+        order_ref = customer_with_order["order_ref"]
+        fake = fake_llm_provider(
+            {
+                "router": [json.dumps({"routes": ["sales", "account"], "order_ref": order_ref})],
+                "sales": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "cheap SUV", "price_max": 18050.0},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Found some cheap SUVs."}),
+                ],
+                "account": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "get_order_status",
+                            "arguments": {"order_ref": order_ref},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Your order is confirmed."}),
+                ],
+                "synthesis": [
+                    "Here are some cheap SUVs, and your order is confirmed and on the way!"
+                ],
+            }
+        )
+        identity = RequestIdentity(
+            session_id="sess-multi-scope", customer_id=customer_with_order["customer_id"]
+        )
+        result = await run_turn(
+            fake,
+            identity,
+            [
+                Message(
+                    role="user",
+                    content="find me a cheap SUV and tell me if my order shipped",
+                )
+            ],
+        )
+
+        assert set(result["routes"]) == {"sales", "account"}
+        sales_result = result["sales_result"]
+        account_result = result["account_result"]
+        assert sales_result is not None
+        assert account_result is not None
+        assert len(sales_result["tool_calls"][0]["result"]) > 0
+        assert account_result["tool_calls"][0]["result"]["order_ref"] == order_ref
+        # Each sub-agent only ever used its own tool - the boundary held
+        # even though both ran in the same turn.
+        assert sales_result["tool_calls"][0]["tool"] == "search_listings"
+        assert account_result["tool_calls"][0]["tool"] == "get_order_status"
+        assert (
+            result["final_response"]
+            == "Here are some cheap SUVs, and your order is confirmed and on the way!"
         )

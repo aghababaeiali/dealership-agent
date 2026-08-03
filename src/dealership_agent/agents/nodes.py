@@ -3,7 +3,7 @@
 Every node is a plain async function of (state) -> partial state update,
 built by a factory that closes over its dependencies (LLM provider, bound
 sub-agents) - no globals, so tests can build a graph with a fake provider
-and in-memory sub-agents with no live LLM or network calls.
+and a real or stubbed MCP session with no live LLM call required.
 """
 
 from __future__ import annotations
@@ -15,9 +15,15 @@ from typing import Any
 import structlog
 
 from dealership_agent.agents.pricing import derive_price_filters
-from dealership_agent.agents.prompts import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT
-from dealership_agent.agents.state import GraphState
+from dealership_agent.agents.prompts import (
+    ACCOUNT_AGENT_SYSTEM_PROMPT,
+    ROUTER_SYSTEM_PROMPT,
+    SALES_AGENT_SYSTEM_PROMPT,
+    SYNTHESIS_SYSTEM_PROMPT,
+)
+from dealership_agent.agents.state import GraphState, ToolLoopResult
 from dealership_agent.agents.tool_binding import SubAgent
+from dealership_agent.agents.tool_loop import run_tool_loop
 from dealership_agent.config import get_settings
 from dealership_agent.llm.base import LLMProvider, Message
 from dealership_agent.tools.identity import bind_identity
@@ -30,6 +36,7 @@ DEFAULT_CLARIFY_QUESTION = (
     "Could you tell me a bit more about what you're looking for - a "
     "vehicle, a dealership policy, or help with an existing order?"
 )
+VALID_ROUTES = {"sales", "account", "clarify", "escalate"}
 
 
 def make_intake_node() -> Node:
@@ -38,7 +45,7 @@ def make_intake_node() -> Node:
         last_content = messages[-1].content.strip() if messages else ""
         if not last_content:
             return {
-                "route": "clarify",
+                "routes": ["clarify"],
                 "clarify_question": "I didn't catch that - what can I help you with?",
             }
         return {}
@@ -49,12 +56,11 @@ def make_intake_node() -> Node:
 def make_router_node(llm: LLMProvider) -> Node:
     async def router_node(state: GraphState) -> dict[str, Any]:
         # Already decided by intake (e.g. empty message) - don't re-route.
-        if state.get("route") == "clarify":
+        if state.get("routes") == ["clarify"]:
             return {}
 
         settings = get_settings()
         messages = state["messages"]
-        price_filters = derive_price_filters(messages[-1].content)
 
         llm_messages = [Message(role="system", content=ROUTER_SYSTEM_PROMPT), *messages]
         raw = llm.complete(llm_messages, model=settings.llm_model_classifier)
@@ -65,71 +71,126 @@ def make_router_node(llm: LLMProvider) -> Node:
             logger.warning("router_decision_unparseable", raw=raw[:200])
             decision = {}
 
-        route = decision.get("route")
+        routes = decision.get("routes")
         clarify_question = decision.get("clarify_question")
-        if route not in {"sales", "account", "clarify", "escalate"}:
-            route = "clarify"
+        if (
+            not isinstance(routes, list)
+            or not routes
+            or not set(routes).issubset(VALID_ROUTES)
+            or ("clarify" in routes and len(routes) > 1)
+            or ("escalate" in routes and len(routes) > 1)
+        ):
+            routes = ["clarify"]
             clarify_question = clarify_question or DEFAULT_CLARIFY_QUESTION
 
         return {
-            "route": route,
-            "sales_intent": decision.get("sales_intent"),
+            "routes": routes,
             "order_ref": decision.get("order_ref"),
+            "price_filters": derive_price_filters(messages[-1].content),
             "clarify_question": clarify_question,
             "escalate_summary": decision.get("escalate_summary"),
             "escalate_reason": decision.get("escalate_reason"),
-            "price_filters": price_filters,
         }
 
     return router_node
 
 
-def make_sales_agent_node(sales_agent: SubAgent) -> Node:
+def make_sales_agent_node(llm: LLMProvider, sales_agent: SubAgent) -> Node:
     async def sales_agent_node(state: GraphState) -> dict[str, Any]:
-        query = state["messages"][-1].content
-        filters = state.get("price_filters") or {}
-        intent = state.get("sales_intent") or "listings"
+        settings = get_settings()
+        original_query = state["messages"][-1].content
+        price_filters = state.get("price_filters")
 
-        if intent == "policy":
-            result = await sales_agent.call_tool("search_policy_docs", {"query": query, "limit": 5})
-        else:
-            result = await sales_agent.call_tool(
-                "search_listings", {"query": query, "limit": 5, **filters}
+        query = f"Customer asked: {original_query}"
+        if price_filters:
+            # Grounded in docs/DATA_PRICE_AUDIT.md's real distribution
+            # (agents/pricing.py) - the LLM must use these exact numbers
+            # for vague price language, never invent its own.
+            query += (
+                f"\nThe customer used vague price language. Use exactly this "
+                f"price filter if you call search_listings: {json.dumps(price_filters)}"
             )
-        return {"tool_result": result}
+
+        # Per-node model routing (CLAUDE.md): tool selection is a
+        # constrained decision, so the loop uses the cheap classifier
+        # model, not the stronger synthesis model.
+        result = await run_tool_loop(
+            llm=llm,
+            model=settings.llm_model_classifier,
+            sub_agent=sales_agent,
+            system_prompt=SALES_AGENT_SYSTEM_PROMPT,
+            user_query=query,
+        )
+        return {"sales_result": result}
 
     return sales_agent_node
 
 
-def make_account_agent_node(account_agent: SubAgent) -> Node:
+def make_account_agent_node(llm: LLMProvider, account_agent: SubAgent) -> Node:
     async def account_agent_node(state: GraphState) -> dict[str, Any]:
+        settings = get_settings()
         order_ref = state.get("order_ref")
-        if not order_ref:
-            return {
-                "route": "clarify",
-                "clarify_question": "What's your order reference number?",
-            }
+        original_query = state["messages"][-1].content
+        query = (
+            f"Customer asked: {original_query}\n"
+            f"Extracted order reference (may be empty): {order_ref or ''}"
+        )
 
-        # Identity is bound to the contextvar right at the MCP server
-        # boundary, for exactly the duration of this tool call - see
-        # state.py's docstring and CLAUDE.md's Core Security Invariant.
+        # Identity is bound to the contextvar only inside the MCP server
+        # subprocess (see docs/adr/0004-mcp-identity-propagation.md) - this
+        # `bind_identity` call is for any in-process code path that also
+        # checks `tools.identity.get_current_identity()` (e.g. logging);
+        # the tool calls themselves are scoped by the subprocess's own
+        # environment, established once at spawn time by agents/runner.py.
         with bind_identity(state["identity"]):
-            result = await account_agent.call_tool("get_order_status", {"order_ref": order_ref})
-        return {"tool_result": result}
+            result = await run_tool_loop(
+                llm=llm,
+                model=settings.llm_model_classifier,
+                sub_agent=account_agent,
+                system_prompt=ACCOUNT_AGENT_SYSTEM_PROMPT,
+                user_query=query,
+            )
+        return {"account_result": result}
 
     return account_agent_node
 
 
+def make_merge_node() -> Node:
+    """Trivial fan-in point: sales_agent and account_agent both route here
+    unconditionally, so the cap-hit check downstream always sees whichever
+    result(s) actually ran, regardless of which branch(es) fired."""
+
+    async def merge_node(state: GraphState) -> dict[str, Any]:  # noqa: ARG001
+        return {}
+
+    return merge_node
+
+
+def any_result_hit_cap(state: GraphState) -> bool:
+    for key in ("sales_result", "account_result"):
+        result: ToolLoopResult | None = state.get(key)  # type: ignore[assignment]
+        if result is not None and result.get("hit_cap"):
+            return True
+    return False
+
+
 def make_escalate_node(account_agent: SubAgent) -> Node:
     async def escalate_node(state: GraphState) -> dict[str, Any]:
-        summary = state.get("escalate_summary") or "Customer requested human assistance."
-        reason = state.get("escalate_reason") or "customer_requested"
+        if any_result_hit_cap(state):
+            summary = (
+                "The assistant could not resolve the customer's request within "
+                "its tool-call limit and is escalating to avoid looping."
+            )
+            reason = "tool_loop_iteration_cap"
+        else:
+            summary = state.get("escalate_summary") or "Customer requested human assistance."
+            reason = state.get("escalate_reason") or "customer_requested"
 
         with bind_identity(state["identity"]):
             result = await account_agent.call_tool(
                 "escalate_to_human", {"summary": summary, "reason": reason}
             )
-        return {"tool_result": result}
+        return {"escalate_result": result}
 
     return escalate_node
 
@@ -145,11 +206,15 @@ def make_clarify_node() -> Node:
 def make_synthesis_node(llm: LLMProvider) -> Node:
     async def synthesis_node(state: GraphState) -> dict[str, Any]:
         settings = get_settings()
-        tool_result_json = json.dumps(state.get("tool_result"), default=str)
+        payload = {
+            "sales": state.get("sales_result"),
+            "account": state.get("account_result"),
+            "escalation": state.get("escalate_result"),
+        }
         llm_messages = [
             Message(role="system", content=SYNTHESIS_SYSTEM_PROMPT),
             *state["messages"],
-            Message(role="user", content=f"Tool result: {tool_result_json}"),
+            Message(role="user", content=f"Agent results: {json.dumps(payload, default=str)}"),
         ]
         response = llm.complete(llm_messages, model=settings.llm_model_synthesis)
         return {"final_response": response}
