@@ -3,14 +3,15 @@
     intake -> router -> fan-out to {sales_agent, account_agent} -> merge
               -> (escalate | synthesis)
     router -> clarify -> END
-    router -> escalate -> synthesis -> END
-    escalate -> synthesis -> END
-    synthesis -> END
+    router -> escalate -> synthesis -> verify_claims -> END
+    escalate -> synthesis -> verify_claims -> END
+    synthesis -> verify_claims -> END
 
 CLAUDE.md: Sales Agent (search_listings, search_policy_docs) and Account
-Agent (get_order_status, escalate_to_human) are bound to disjoint tool
-sets - see tool_binding.py, which enforces this at construction. This
-module only wires graph control flow; it never binds a tool itself.
+Agent (get_order_status, list_my_orders, escalate_to_human) are bound to
+disjoint tool sets - see tool_binding.py, which enforces this at
+construction. This module only wires graph control flow; it never binds
+a tool itself.
 
 A single turn can route to BOTH sub-agents (e.g. "find me a cheap SUV and
 tell me if my order shipped"): the router may return
@@ -18,6 +19,13 @@ tell me if my order shipped"): the router may return
 converge on the `merge` node before either `escalate` (if either hit its
 tool-call cap) or `synthesis`, which combines whatever result(s) are
 present into one reply. Each sub-agent still only ever sees its own tools.
+
+`verify_claims` (Step 7, Part A) is a second, independent pass after
+synthesis: it checks the drafted reply for action claims (a human
+handoff, a cancellation, a booking, a refund) that aren't backed by a
+real tool result, and corrects or replaces the reply if it finds one.
+`clarify`'s response is a deterministic, hardcoded question - never
+LLM-generated free text - so it skips verification entirely.
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from dealership_agent.agents.nodes import (
     make_router_node,
     make_sales_agent_node,
     make_synthesis_node,
+    make_verify_claims_node,
 )
 from dealership_agent.agents.state import GraphState
 from dealership_agent.agents.tool_binding import SubAgent
@@ -85,6 +94,7 @@ def build_supervisor_graph(
     graph.add_node("escalate", make_escalate_node(account_agent))  # type: ignore[call-overload]
     graph.add_node("clarify", make_clarify_node())  # type: ignore[call-overload]
     graph.add_node("synthesis", make_synthesis_node(llm))  # type: ignore[call-overload]
+    graph.add_node("verify_claims", make_verify_claims_node(llm))  # type: ignore[call-overload]
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
@@ -110,6 +120,7 @@ def build_supervisor_graph(
     )
     graph.add_edge("escalate", "synthesis")
     graph.add_edge("clarify", END)
-    graph.add_edge("synthesis", END)
+    graph.add_edge("synthesis", "verify_claims")
+    graph.add_edge("verify_claims", END)
 
     return graph.compile()

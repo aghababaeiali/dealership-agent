@@ -1,13 +1,20 @@
 """MCP tool server: the framework-independent tool layer LangGraph consumes
 as a real MCP client over stdio (CLAUDE.md).
 
-Exactly four tools, split by permission scope:
+Exactly five tools, split by permission scope:
   - search_listings, search_policy_docs: public data, no identity anywhere.
-  - get_order_status, escalate_to_human: customer-scoped, go through
-    tools.scope.customer_scoped_connection() - the identity comes from
-    server-side request context (tools/identity.py), never from a tool
-    argument. Re-read CLAUDE.md's Core Security Invariant before adding a
-    parameter to any tool here.
+  - get_order_status, list_my_orders, escalate_to_human: customer-scoped,
+    go through tools.scope.customer_scoped_connection() - the identity
+    comes from server-side request context (tools/identity.py), never
+    from a tool argument. Re-read CLAUDE.md's Core Security Invariant
+    before adding a parameter to any tool here.
+
+list_my_orders exists specifically so the account agent can answer a bare
+"where is my order?" by looking the customer up, instead of guessing at
+an order_ref it doesn't have (see docs/adr/0005-action-claim-verification.md
+for the incident that motivated this - Step 6's smoke test showed the
+account agent fabricating a human handoff after failing 3 guesses at an
+order_ref for exactly this reason).
 
 Run standalone (`python -m dealership_agent.tools.server`), this process
 IS one MCP session: identity is read once from environment variables set
@@ -161,6 +168,46 @@ def get_order_status(order_ref: str) -> dict[str, Any] | None:
             {"order_ref": order_ref},
         ).fetchone()
     return dict(row._mapping) if row is not None else None
+
+
+@server.tool()
+@_log_tool_call
+def list_my_orders(status_filter: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    """List the current customer's own orders (optionally filtered by
+    status: pending, confirmed, in_preparation, ready_for_delivery,
+    delivered, cancelled, refunded), most recent first.
+
+    Never another customer's orders - same customer_scoped_connection
+    chokepoint as get_order_status, so a missing/unauthenticated identity
+    fails closed with no rows, not an empty-looking success.
+    """
+    with customer_scoped_connection() as scoped:
+        rows = scoped.connection.execute(
+            text(
+                """
+                SELECT o.order_ref, o.status, o.created_at,
+                       o.expected_delivery_date, o.actual_delivery_date,
+                       v.year, v.make, v.model
+                FROM orders o
+                JOIN vehicles v ON v.id = o.vehicle_id
+                WHERE (CAST(:status_filter AS text) IS NULL OR o.status::text = :status_filter)
+                ORDER BY o.created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"status_filter": status_filter, "limit": limit},
+        ).fetchall()
+    return [
+        {
+            "order_ref": row.order_ref,
+            "status": row.status,
+            "vehicle_summary": f"{row.year} {row.make} {row.model}",
+            "created_at": row.created_at,
+            "expected_delivery_date": row.expected_delivery_date,
+            "actual_delivery_date": row.actual_delivery_date,
+        }
+        for row in rows
+    ]
 
 
 @server.tool()

@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.types import TextContent
 
 SALES_AGENT_TOOLS = frozenset({"search_listings", "search_policy_docs"})
-ACCOUNT_AGENT_TOOLS = frozenset({"get_order_status", "escalate_to_human"})
+ACCOUNT_AGENT_TOOLS = frozenset({"get_order_status", "list_my_orders", "escalate_to_human"})
 
 
 @dataclass(frozen=True)

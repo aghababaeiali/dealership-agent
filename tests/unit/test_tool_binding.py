@@ -29,7 +29,11 @@ class TestSubAgentToolSetsAreDisjoint:
     async def test_account_agent_has_exactly_the_expected_tools(self) -> None:
         async with open_mcp_session(_IDENTITY) as session:
             account_agent = await build_account_agent(session)
-            assert account_agent.allowed_tools == {"get_order_status", "escalate_to_human"}
+            assert account_agent.allowed_tools == {
+                "get_order_status",
+                "list_my_orders",
+                "escalate_to_human",
+            }
             assert set(account_agent.tool_specs) == account_agent.allowed_tools
 
     async def test_sales_and_account_tool_sets_are_disjoint(self) -> None:

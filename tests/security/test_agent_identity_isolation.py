@@ -123,6 +123,7 @@ class TestNoIdentityLeaksIntoPrompts:
                     json.dumps({"action": "final", "answer": "Your order is confirmed."}),
                 ],
                 "synthesis": ["Your order is confirmed and on track."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-identity-test", customer_id=customer_id)
@@ -177,6 +178,7 @@ class TestNoIdentityLeaksIntoPrompts:
                     json.dumps({"action": "final", "answer": "Here are some options for you."}),
                 ],
                 "synthesis": ["Here are some options for you."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-identity-sales", customer_id=customer_id)
@@ -223,6 +225,7 @@ class TestNoIdentityLeaksIntoPrompts:
                     json.dumps({"action": "final", "answer": "Your order is confirmed."}),
                 ],
                 "synthesis": ["Here are some cheap SUVs, and your order is confirmed!"],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-identity-multi", customer_id=customer_id)

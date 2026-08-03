@@ -10,7 +10,8 @@ explicitly asking the user first.
 - NO Kubernetes. Deployment target is AWS ECS Fargate.
 - Multi-agent: one Supervisor + two sub-agents, split by TOOL PERMISSION SCOPE:
   - Sales Agent (read-only, public data): `search_listings`, `search_policy_docs`
-  - Account Agent (customer-scoped): `get_order_status`, `escalate_to_human`
+  - Account Agent (customer-scoped): `get_order_status`, `list_my_orders`,
+    `escalate_to_human`
 
   The split IS the security boundary. Sales Agent must never have order tools
   bound.

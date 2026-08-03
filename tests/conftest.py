@@ -13,6 +13,7 @@ _AGENT_PROMPT_MARKERS = {
     "sales": "sales assistant",
     "account": "account assistant",
     "synthesis": "helpful, honest assistant",
+    "verifier": "strict fact-checker",
 }
 
 

@@ -99,7 +99,7 @@ class TestToolSchemasContainNoIdentityFields:
         async with open_mcp_session(anonymous) as session:
             tools = await session.list_tools()
 
-        assert len(tools.tools) == 4
+        assert len(tools.tools) == 5
 
         for tool in tools.tools:
             schema_properties = set(tool.inputSchema.get("properties", {}).keys())
@@ -139,6 +139,44 @@ class TestGetOrderStatusScoping:
         # Over the real transport, a tool-side failure comes back as an
         # error *result*, not a raised client-side exception - either way,
         # no order data is returned.
+        assert result.isError is True
+        assert result.structuredContent is None
+
+
+class TestListMyOrdersScoping:
+    async def test_returns_only_the_calling_customers_own_orders(
+        self, two_customers_with_orders: OrderFixture
+    ) -> None:
+        fixtures = two_customers_with_orders
+        identity_b = RequestIdentity(
+            session_id="test-session-list-b", customer_id=fixtures["customer_b_id"]
+        )
+        async with open_mcp_session(identity_b) as session:
+            result_b = await session.call_tool("list_my_orders", {})
+
+        assert result_b.isError is False
+        content_b = result_b.structuredContent
+        assert content_b is not None
+        refs_b = {order["order_ref"] for order in content_b["result"]}
+        assert fixtures["order_b_ref"] in refs_b
+
+        identity_a = RequestIdentity(
+            session_id="test-session-list-a", customer_id=fixtures["customer_a_id"]
+        )
+        async with open_mcp_session(identity_a) as session:
+            result_a = await session.call_tool("list_my_orders", {})
+
+        assert result_a.isError is False
+        content_a = result_a.structuredContent
+        assert content_a is not None
+        refs_a = {order["order_ref"] for order in content_a["result"]}
+        assert fixtures["order_b_ref"] not in refs_a
+
+    async def test_no_session_context_fails_closed_and_returns_no_data(self) -> None:
+        anonymous = RequestIdentity(session_id="anon-list-orders-session", customer_id=None)
+        async with open_mcp_session(anonymous) as session:
+            result = await session.call_tool("list_my_orders", {})
+
         assert result.isError is True
         assert result.structuredContent is None
 

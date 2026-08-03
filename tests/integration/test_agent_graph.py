@@ -93,6 +93,7 @@ class TestSalesAgentHappyPath:
                     ),
                 ],
                 "synthesis": ["Here are a few affordable, reliable SUVs currently in stock."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(session_id="sess-sales", customer_id=None)
@@ -132,6 +133,7 @@ class TestAccountAgentHappyPath:
                     json.dumps({"action": "final", "answer": "Your order is confirmed."}),
                 ],
                 "synthesis": ["Your order is confirmed and on track."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(
@@ -194,6 +196,7 @@ class TestEscalatePath:
                     )
                 ],
                 "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(
@@ -246,6 +249,7 @@ class TestMultiScopeRouting:
                 "synthesis": [
                     "Here are some cheap SUVs, and your order is confirmed and on the way!"
                 ],
+                "verifier": [json.dumps({"claims": []})],
             }
         )
         identity = RequestIdentity(
