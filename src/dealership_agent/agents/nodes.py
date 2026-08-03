@@ -192,7 +192,25 @@ def make_escalate_node(account_agent: SubAgent) -> Node:
             summary = state.get("escalate_summary") or "Customer requested human assistance."
             reason = state.get("escalate_reason") or "customer_requested"
 
-        with bind_identity(state["identity"]):
+        identity = state["identity"]
+        if identity.customer_id is None:
+            # escalate_to_human is Account Agent's tool - customer-scoped,
+            # per CLAUDE.md's security boundary - and genuinely cannot
+            # persist a record for an unauthenticated session (the
+            # escalations table requires a customer_id). An anonymous
+            # sales conversation can still reach this node (e.g. an
+            # iteration-cap hit), so this must degrade to a plain
+            # "no ticket created" result rather than let the tool call
+            # raise PermissionError and crash the turn.
+            logger.warning("escalate_skipped_no_authenticated_customer", reason=reason)
+            return {
+                "escalate_result": {
+                    "status": "not_created",
+                    "reason": "no_authenticated_customer",
+                }
+            }
+
+        with bind_identity(identity):
             result = await account_agent.call_tool(
                 "escalate_to_human", {"summary": summary, "reason": reason}
             )

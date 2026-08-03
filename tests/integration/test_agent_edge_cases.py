@@ -300,6 +300,51 @@ class TestLLMProviderErrorEscalates:
         )
 
 
+class TestEscalationWithNoAuthenticatedCustomer:
+    """Discovered live: an anonymous sales conversation (no bound
+    customer_id - genuinely legal per CLAUDE.md, Sales Agent is
+    read-only/public) hit the iteration cap and got routed to escalate,
+    which then tried to call the customer-scoped escalate_to_human tool
+    and raised PermissionError, crashing the turn - escalate_to_human
+    cannot persist a record with no customer_id. Must degrade to a
+    "no ticket created" result instead."""
+
+    async def test_anonymous_cap_hit_degrades_instead_of_crashing(
+        self, fake_llm_provider: type
+    ) -> None:
+        endless_tool_calls = [
+            json.dumps(
+                {
+                    "action": "call_tool",
+                    "tool": "search_listings",
+                    "arguments": {"query": f"attempt {i}"},
+                }
+            )
+            for i in range(5)
+        ]
+        fake = fake_llm_provider(
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "sales": endless_tool_calls,
+                "synthesis": ["I'm having trouble with that request - please contact support."],
+            }
+        )
+        identity = RequestIdentity(session_id="sess-anon-cap-hit", customer_id=None)
+
+        result = await run_turn(
+            fake, identity, [Message(role="user", content="Find me the perfect car")]
+        )
+
+        escalate_result = result["escalate_result"]
+        assert escalate_result is not None
+        assert escalate_result["status"] == "not_created"
+        assert escalate_result["reason"] == "no_authenticated_customer"
+        assert (
+            result["final_response"]
+            == "I'm having trouble with that request - please contact support."
+        )
+
+
 class TestMultiStepToolChain:
     async def test_sales_agent_finds_a_vehicle_then_looks_up_a_related_policy(
         self, fake_llm_provider: type
