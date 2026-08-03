@@ -514,3 +514,51 @@ class TestMultiStepToolChain:
         assert (
             sales_result["final_answer"] == "Here's a matching SUV and our warranty policy for it."
         )
+
+
+class TestDuplicateToolCallsAreMemoized:
+    """Step 8, Part C2: Step 7's live smoke test showed the sales agent
+    calling search_listings twice in a row with identical arguments. The
+    second identical call must be served from a per-loop cache instead
+    of hitting the tool again."""
+
+    async def test_second_identical_call_is_served_from_cache(
+        self, fake_llm_provider: type
+    ) -> None:
+        fake = fake_llm_provider(
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "sales": [
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "reliable SUV"},
+                        }
+                    ),
+                    # Identical tool + identical arguments, again.
+                    json.dumps(
+                        {
+                            "action": "call_tool",
+                            "tool": "search_listings",
+                            "arguments": {"query": "reliable SUV"},
+                        }
+                    ),
+                    json.dumps({"action": "final", "answer": "Here's what I found."}),
+                ],
+                "synthesis": ["Here's what I found."],
+            }
+        )
+        identity = RequestIdentity(session_id="sess-duplicate-call", customer_id=None)
+        result = await run_turn(
+            fake, identity, [Message(role="user", content="Do you have any reliable SUVs?")]
+        )
+
+        sales_result = result["sales_result"]
+        assert sales_result is not None
+        assert len(sales_result["tool_calls"]) == 2
+        first_call, second_call = sales_result["tool_calls"]
+        assert "cached" not in first_call
+        assert second_call["cached"] is True
+        # Same result served both times, without a second real tool call.
+        assert first_call["result"] == second_call["result"]

@@ -19,6 +19,13 @@ Tool observations fed back into the loop's own message history are
 compacted (agents/compaction.py) - never the raw tool-result JSON. The
 raw result is still kept in the returned `tool_calls`, for synthesis,
 tests, and logging.
+
+Step 8, Part C2: identical tool + identical arguments within one loop
+call returns the cached result and tells the model it already ran this,
+instead of calling the tool again - Step 7's live smoke test showed the
+model repeating an identical search_listings call back to back with no
+new information gained. `tool_calls` entries for a cache hit carry
+`"cached": True` so callers/tests can tell the difference.
 """
 
 from __future__ import annotations
@@ -116,6 +123,7 @@ async def run_tool_loop(
         Message(role="user", content=user_query),
     ]
     tool_calls: list[dict[str, object]] = []
+    call_cache: dict[str, object] = {}
 
     for iteration in range(max_iterations):
         estimated_prompt_tokens = estimate_messages_tokens(messages)
@@ -169,18 +177,46 @@ async def run_tool_loop(
         arguments = decision.get("arguments") or {}
         messages.append(Message(role="assistant", content=raw))
 
-        try:
-            result = await sub_agent.call_tool(tool_name, arguments)
-            tool_calls.append({"tool": tool_name, "arguments": arguments, "result": result})
-            compacted = compact_tool_result(result, max_chars=max_observation_chars)
-            observation = json.dumps({"tool": tool_name, "result": compacted})
-        except Exception as exc:  # noqa: BLE001 -- tool failures must degrade, never crash the node
-            error_text = compact_error(str(exc), max_chars=max_observation_chars)
-            tool_calls.append({"tool": tool_name, "arguments": arguments, "error": error_text})
-            observation = json.dumps({"tool": tool_name, "error": error_text})
-            logger.warning(
-                "tool_loop_tool_error", agent=sub_agent.name, tool=tool_name, error=error_text
+        cache_key = json.dumps({"tool": tool_name, "arguments": arguments}, sort_keys=True)
+        if cache_key in call_cache:
+            # Step 8, Part C2: identical tool + identical arguments within
+            # this same loop returns the cached result instead of calling
+            # again - Step 7's live smoke test showed the model repeating
+            # an identical search_listings call back to back for no
+            # reason. Errors are deliberately never cached: a failing call
+            # might genuinely succeed on retry, unlike a real result,
+            # which is safe to reuse as-is.
+            result = call_cache[cache_key]
+            tool_calls.append(
+                {"tool": tool_name, "arguments": arguments, "result": result, "cached": True}
             )
+            compacted = compact_tool_result(result, max_chars=max_observation_chars)
+            observation = json.dumps(
+                {
+                    "tool": tool_name,
+                    "result": compacted,
+                    "note": (
+                        "You already called this exact tool with these exact arguments "
+                        "earlier in this conversation - this is the same result, not a "
+                        "new search. Try different arguments or answer with what you have."
+                    ),
+                }
+            )
+            logger.info("tool_loop_duplicate_call_memoized", agent=sub_agent.name, tool=tool_name)
+        else:
+            try:
+                result = await sub_agent.call_tool(tool_name, arguments)
+                call_cache[cache_key] = result
+                tool_calls.append({"tool": tool_name, "arguments": arguments, "result": result})
+                compacted = compact_tool_result(result, max_chars=max_observation_chars)
+                observation = json.dumps({"tool": tool_name, "result": compacted})
+            except Exception as exc:  # noqa: BLE001 -- tool failures must degrade, never crash the node
+                error_text = compact_error(str(exc), max_chars=max_observation_chars)
+                tool_calls.append({"tool": tool_name, "arguments": arguments, "error": error_text})
+                observation = json.dumps({"tool": tool_name, "error": error_text})
+                logger.warning(
+                    "tool_loop_tool_error", agent=sub_agent.name, tool=tool_name, error=error_text
+                )
 
         messages.append(Message(role="user", content=f"Tool observation: {observation}"))
         logger.info(
