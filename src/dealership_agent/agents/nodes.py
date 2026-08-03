@@ -71,7 +71,7 @@ def make_router_node(llm: LLMProvider) -> Node:
         messages = state["messages"]
 
         llm_messages = [Message(role="system", content=ROUTER_SYSTEM_PROMPT), *messages]
-        raw = llm.complete(llm_messages, model=settings.llm_model_classifier)
+        raw = llm.complete(llm_messages, model=settings.model_classifier)
 
         try:
             decision = json.loads(raw)
@@ -124,7 +124,7 @@ def make_sales_agent_node(llm: LLMProvider, sales_agent: SubAgent) -> Node:
         # model, not the stronger synthesis model.
         result = await run_tool_loop(
             llm=llm,
-            model=settings.llm_model_classifier,
+            model=settings.model_classifier,
             sub_agent=sales_agent,
             system_prompt=SALES_AGENT_SYSTEM_PROMPT,
             user_query=query,
@@ -153,7 +153,7 @@ def make_account_agent_node(llm: LLMProvider, account_agent: SubAgent) -> Node:
         with bind_identity(state["identity"]):
             result = await run_tool_loop(
                 llm=llm,
-                model=settings.llm_model_classifier,
+                model=settings.model_classifier,
                 sub_agent=account_agent,
                 system_prompt=ACCOUNT_AGENT_SYSTEM_PROMPT,
                 user_query=query,
@@ -304,7 +304,7 @@ def make_synthesis_node(llm: LLMProvider) -> Node:
         degraded, reasons = compute_degradation(state)
         note = _degradation_note(reasons) if degraded else None
         llm_messages = _build_synthesis_messages(state, degradation_note=note)
-        response = llm.complete(llm_messages, model=settings.llm_model_synthesis)
+        response = llm.complete(llm_messages, model=settings.model_synthesis)
         return {"final_response": response, "degraded": degraded, "degradation_reasons": reasons}
 
     return synthesis_node
@@ -327,7 +327,7 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
         draft = state.get("final_response") or ""
         evidence = build_evidence_summary(state)
 
-        outcome = check_draft(llm, settings.llm_model_classifier, draft, evidence)
+        outcome = check_draft(llm, settings.model_classifier, draft, evidence)
         if outcome["label"] == "CLEAN":
             return {}
 
@@ -351,9 +351,9 @@ def make_verify_claims_node(llm: LLMProvider) -> Node:
         regenerate_messages = _build_synthesis_messages(state)
         regenerate_messages.append(Message(role="assistant", content=draft))
         regenerate_messages.append(Message(role="user", content=correction))
-        regenerated = llm.complete(regenerate_messages, model=settings.llm_model_synthesis)
+        regenerated = llm.complete(regenerate_messages, model=settings.model_synthesis)
 
-        recheck = check_draft(llm, settings.llm_model_classifier, regenerated, evidence)
+        recheck = check_draft(llm, settings.model_classifier, regenerated, evidence)
         existing_reasons = list(state.get("degradation_reasons") or [])
 
         if recheck["label"] == "CLEAN":

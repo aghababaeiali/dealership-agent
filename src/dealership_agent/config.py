@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     llm_provider: str = "groq"
+    # Step 9, Part C2: per-node model routing, configurable per provider -
+    # LLM_MODEL_CLASSIFIER/SYNTHESIS are Groq's (and the historical
+    # default's) model names; BEDROCK_MODEL_CLASSIFIER/SYNTHESIS are
+    # Bedrock's. `model_classifier`/`model_synthesis` below resolve to
+    # whichever pair matches `llm_provider`, so switching providers never
+    # requires also editing the model-name env vars a second time.
     llm_model_classifier: str = ""
     llm_model_synthesis: str = ""
 
@@ -85,8 +91,12 @@ class Settings(BaseSettings):
     # making a call likely to fail with a 413/429.
     loop_token_budget: int = 4000
 
-    aws_region: str = "us-east-1"
+    # Step 9, Part C1: default changed from us-east-1 to eu-west-1 per
+    # this step's explicit instruction.
+    aws_region: str = "eu-west-1"
     aws_bedrock_role_arn: str = ""
+    bedrock_model_classifier: str = ""
+    bedrock_model_synthesis: str = ""
 
     mcp_server_host: str = "localhost"
     mcp_server_port: int = 8765
@@ -94,6 +104,27 @@ class Settings(BaseSettings):
     langfuse_host: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+
+    @property
+    def model_classifier(self) -> str:
+        """The cheap model used for routing, guardrail detection, and
+        loop decisions (agents/nodes.py's router, tool-calling loops, and
+        action-claim stage 1/2) - resolved per the active provider."""
+        return (
+            self.bedrock_model_classifier
+            if self.llm_provider == "bedrock"
+            else self.llm_model_classifier
+        )
+
+    @property
+    def model_synthesis(self) -> str:
+        """The stronger model used for final customer-facing synthesis -
+        resolved per the active provider."""
+        return (
+            self.bedrock_model_synthesis
+            if self.llm_provider == "bedrock"
+            else self.llm_model_synthesis
+        )
 
 
 @lru_cache
