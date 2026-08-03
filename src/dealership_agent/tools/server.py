@@ -1,5 +1,5 @@
 """MCP tool server: the framework-independent tool layer LangGraph consumes
-as an MCP client (CLAUDE.md).
+as a real MCP client over stdio (CLAUDE.md).
 
 Exactly four tools, split by permission scope:
   - search_listings, search_policy_docs: public data, no identity anywhere.
@@ -8,27 +8,58 @@ Exactly four tools, split by permission scope:
     server-side request context (tools/identity.py), never from a tool
     argument. Re-read CLAUDE.md's Core Security Invariant before adding a
     parameter to any tool here.
+
+Run standalone (`python -m dealership_agent.tools.server`), this process
+IS one MCP session: identity is read once from environment variables set
+by the parent at subprocess spawn time (see agents/mcp_session.py) and
+bound for the process's entire lifetime - never per call, never as a tool
+argument. See docs/adr/0004-mcp-identity-propagation.md.
 """
 
 from __future__ import annotations
 
 import functools
+import os
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
 
 import structlog
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 from sqlalchemy import text
 
 from dealership_agent.retrieval.policy_search import search_policy_docs as _search_policy_docs
 from dealership_agent.retrieval.search import search_listings as _search_listings
-from dealership_agent.tools.identity import get_current_identity
+from dealership_agent.tools.identity import (
+    RequestIdentity,
+    bind_identity,
+    get_current_identity,
+)
 from dealership_agent.tools.scope import customer_scoped_connection
 
 logger = structlog.get_logger(__name__)
 
-server = MCPServer("dealership-agent-tools")
+server = FastMCP("dealership-agent-tools")
+
+SESSION_ID_ENV_VAR = "DEALERSHIP_MCP_SESSION_ID"
+CUSTOMER_ID_ENV_VAR = "DEALERSHIP_MCP_CUSTOMER_ID"
+
+
+def _identity_from_env() -> RequestIdentity | None:
+    """Read the identity this server process was spawned with.
+
+    Returns None for an anonymous/public session (e.g. a Sales Agent
+    conversation with no logged-in customer) - only DEALERSHIP_MCP_SESSION_ID
+    is required for that; DEALERSHIP_MCP_CUSTOMER_ID is set only when a real
+    customer is authenticated.
+    """
+    session_id = os.environ.get(SESSION_ID_ENV_VAR)
+    if not session_id:
+        return None
+    customer_id_str = os.environ.get(CUSTOMER_ID_ENV_VAR)
+    customer_id = int(customer_id_str) if customer_id_str else None
+    return RequestIdentity(session_id=session_id, customer_id=customer_id)
 
 
 def _row_count(result: object) -> int:
@@ -154,3 +185,35 @@ def escalate_to_human(summary: str, reason: str) -> dict[str, Any]:
         ).fetchone()
     assert row is not None  # noqa: S101 -- INSERT ... RETURNING always returns a row
     return {"id": row.id, "created_at": row.created_at, "status": "escalated"}
+
+
+def main() -> None:
+    """Entry point for `python -m dealership_agent.tools.server`.
+
+    Binds this process's identity (if any) once, for its entire lifetime -
+    one subprocess is one MCP session. Never rebinds per call.
+    """
+    # CRITICAL for stdio transport: stdout is the JSON-RPC wire. structlog's
+    # default logger factory writes to stdout, which would silently corrupt
+    # every message. All logging from this process must go to stderr.
+    structlog.configure(
+        processors=[structlog.processors.JSONRenderer()],
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+    )
+
+    identity = _identity_from_env()
+    logger.info(
+        "mcp_server_starting",
+        transport="stdio",
+        has_identity=identity is not None,
+        session_id=identity.session_id if identity else None,
+    )
+    if identity is not None:
+        with bind_identity(identity):
+            server.run(transport="stdio")
+    else:
+        server.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

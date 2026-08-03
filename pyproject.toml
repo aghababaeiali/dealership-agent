@@ -9,8 +9,12 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "langgraph>=0.2",
     "langchain-core>=0.3",
-    "langchain-mcp-adapters>=0.0.5",
-    "mcp>=1.0",
+    "langchain-mcp-adapters>=0.3.1",
+    # Pinned <2: langchain-mcp-adapters 0.3.1 imports mcp.server.fastmcp,
+    # which mcp 2.0 removed/restructured to mcp.server.mcpserver. Verified
+    # 0.3.1 + mcp 1.29.0 (latest 1.x) import and run cleanly together -
+    # see docs/adr/0003-mcp-real-stdio-transport.md.
+    "mcp>=1.24.0,<2",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "sqlalchemy>=2.0",

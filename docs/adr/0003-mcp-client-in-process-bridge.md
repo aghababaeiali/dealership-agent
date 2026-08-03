@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted.
+**Superseded.** The in-process bridge this ADR describes has been
+replaced by a real MCP stdio transport - see the "Superseded" section at
+the end of this document and ADR 0004. The historical context and
+reasoning below is kept as the record of what was tried, what broke, and
+why, since the next investigation (done properly, this time) built on it.
 
 ## Context
 
@@ -78,3 +82,36 @@ contract itself:
   codebase today to run the tool server as a separate process reachable
   over stdio/SSE. Revisit this if/when a real multi-process deployment is
   needed; it was not needed for this task.
+
+## Superseded
+
+The "revisit this" above happened the next time this codebase was
+touched. Re-investigating properly (rather than re-confirming the
+workaround) found a real fix:
+
+- `langchain-mcp-adapters` has had no release since `0.3.1` - there is no
+  newer version that supports `mcp` 2.x to wait for.
+- But `langchain-mcp-adapters==0.3.1` **does** work correctly against the
+  latest `mcp` 1.x release (`1.29.0`) - verified directly:
+  `from langchain_mcp_adapters.tools import load_mcp_tools` imports
+  cleanly, and a real stdio client/server round trip
+  (`mcp.client.stdio.stdio_client` + `ClientSession` talking to a
+  `mcp.server.fastmcp.FastMCP` server subprocess) works reliably. The
+  2.0.0-vs-1.x break this ADR describes was never actually a dead end -
+  the first pass just hadn't checked whether pinning `mcp<2` resolved it.
+- `pyproject.toml` now pins `mcp>=1.24.0,<2`; `tools/server.py` was
+  rewritten from `mcp.server.mcpserver.MCPServer` to
+  `mcp.server.fastmcp.FastMCP` (a small, mechanical change - same
+  `@server.tool()` decorator pattern, same `list_tools()`/`call_tool()`
+  shape).
+- The tool server now runs as a genuine separate OS process
+  (`python -m dealership_agent.tools.server`), and the agent connects as
+  a real MCP client over stdio (`agents/mcp_session.py`). The in-process
+  `tool_binding.py` calls this ADR justified are gone; see ADR 0004 for
+  how identity propagation was redesigned for a real process boundary.
+
+The lesson: the original in-process bridge was a defensible call under
+time pressure, but "newest version of `langchain-mcp-adapters` is broken
+against newest `mcp`" and "no combination of these two libraries works"
+are different claims, and only the first one was actually verified at the
+time.

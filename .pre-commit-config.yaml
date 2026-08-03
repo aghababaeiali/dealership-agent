@@ -17,7 +17,7 @@ repos:
           - alembic>=1.13
           - pgvector>=0.3
           - pytest>=8.3
-          - mcp>=1.0
+          - mcp>=1.24.0,<2
           - structlog>=24.4
           - langgraph>=0.2
           - langchain-core>=0.3

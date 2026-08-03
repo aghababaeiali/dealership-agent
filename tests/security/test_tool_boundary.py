@@ -1,4 +1,7 @@
-"""Tool-boundary security tests for the MCP server.
+"""Tool-boundary security tests for the MCP server, run against the REAL
+stdio transport (see docs/adr/0003, docs/adr/0004): every assertion here
+reads schemas and results exactly as they come over the wire from a
+separate server subprocess, not from in-process method calls.
 
 Proves CLAUDE.md's Core Security Invariant end-to-end: no tool schema
 exposes an identity field, and get_order_status can only ever return the
@@ -11,14 +14,12 @@ from collections.abc import Iterator
 from typing import TypedDict
 
 import pytest
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import CallToolResult
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from dealership_agent.agents.mcp_session import open_mcp_session
 from dealership_agent.config import get_settings
-from dealership_agent.tools.identity import RequestIdentity, bind_identity
-from dealership_agent.tools.server import server
+from dealership_agent.tools.identity import RequestIdentity
 
 settings = get_settings()
 
@@ -94,11 +95,14 @@ def two_customers_with_orders(owner_engine: Engine) -> Iterator[OrderFixture]:
 
 class TestToolSchemasContainNoIdentityFields:
     async def test_no_tool_schema_contains_identity_fields(self) -> None:
-        tools = await server.list_tools()
-        assert len(tools) == 4
+        anonymous = RequestIdentity(session_id="schema-scan-session", customer_id=None)
+        async with open_mcp_session(anonymous) as session:
+            tools = await session.list_tools()
 
-        for tool in tools:
-            schema_properties = set(tool.input_schema.get("properties", {}).keys())
+        assert len(tools.tools) == 4
+
+        for tool in tools.tools:
+            schema_properties = set(tool.inputSchema.get("properties", {}).keys())
             leaked = schema_properties & FORBIDDEN_SCHEMA_FIELDS
             assert not leaked, f"Tool {tool.name!r} exposes identity field(s): {leaked}"
 
@@ -108,30 +112,46 @@ class TestGetOrderStatusScoping:
         self, two_customers_with_orders: OrderFixture
     ) -> None:
         fixtures = two_customers_with_orders
-        with bind_identity(
-            RequestIdentity(session_id="test-session-a", customer_id=fixtures["customer_a_id"])
-        ):
-            result = await server.call_tool(
+        identity_a = RequestIdentity(
+            session_id="test-session-a", customer_id=fixtures["customer_a_id"]
+        )
+        async with open_mcp_session(identity_a) as session:
+            result = await session.call_tool(
                 "get_order_status", {"order_ref": fixtures["order_b_ref"]}
             )
-        assert isinstance(result, CallToolResult)
-        assert result.structured_content == {"result": None}
 
-    async def test_no_session_context_raises_and_returns_no_data(
+        assert result.isError is False
+        assert result.structuredContent == {"result": None}
+
+    async def test_no_session_context_fails_closed_and_returns_no_data(
         self, two_customers_with_orders: OrderFixture
     ) -> None:
         fixtures = two_customers_with_orders
-        with pytest.raises(ToolError):
-            await server.call_tool("get_order_status", {"order_ref": fixtures["order_b_ref"]})
+        # No customer_id bound for this session at all - the subprocess
+        # never receives DEALERSHIP_MCP_CUSTOMER_ID (see
+        # docs/adr/0004-mcp-identity-propagation.md).
+        anonymous = RequestIdentity(session_id="anon-session", customer_id=None)
+        async with open_mcp_session(anonymous) as session:
+            result = await session.call_tool(
+                "get_order_status", {"order_ref": fixtures["order_b_ref"]}
+            )
+
+        # Over the real transport, a tool-side failure comes back as an
+        # error *result*, not a raised client-side exception - either way,
+        # no order data is returned.
+        assert result.isError is True
+        assert result.structuredContent is None
 
 
 class TestSearchListingsIsPublic:
     async def test_search_listings_works_with_no_session_context(self) -> None:
-        result = await server.call_tool(
-            "search_listings", {"query": "reliable family SUV", "limit": 3}
-        )
-        assert isinstance(result, CallToolResult)
-        assert result.is_error is False
-        content = result.structured_content
+        anonymous = RequestIdentity(session_id="public-sales-session", customer_id=None)
+        async with open_mcp_session(anonymous) as session:
+            result = await session.call_tool(
+                "search_listings", {"query": "reliable family SUV", "limit": 3}
+            )
+
+        assert result.isError is False
+        content = result.structuredContent
         assert content is not None
         assert len(content["result"]) > 0
