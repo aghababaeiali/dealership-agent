@@ -177,11 +177,17 @@ def any_result_hit_cap(state: GraphState) -> bool:
 def make_escalate_node(account_agent: SubAgent) -> Node:
     async def escalate_node(state: GraphState) -> dict[str, Any]:
         if any_result_hit_cap(state):
+            # Covers two distinct triggers that both return hit_cap=True
+            # (see tool_loop.py): the iteration cap, or an LLM provider
+            # call failing outright (rate limit, timeout) - either way,
+            # the sub-agent could not produce an answer and must escalate
+            # rather than crash the turn or loop forever.
             summary = (
-                "The assistant could not resolve the customer's request within "
-                "its tool-call limit and is escalating to avoid looping."
+                "The assistant could not resolve the customer's request - either it "
+                "reached its tool-call limit, or a technical issue prevented it from "
+                "continuing - and is escalating rather than failing silently."
             )
-            reason = "tool_loop_iteration_cap"
+            reason = "tool_loop_could_not_complete"
         else:
             summary = state.get("escalate_summary") or "Customer requested human assistance."
             reason = state.get("escalate_reason") or "customer_requested"

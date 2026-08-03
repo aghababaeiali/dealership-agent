@@ -75,7 +75,20 @@ async def run_tool_loop(
     tool_calls: list[dict[str, object]] = []
 
     for iteration in range(max_iterations):
-        raw = llm.complete(messages, model=model)
+        try:
+            raw = llm.complete(messages, model=model)
+        except Exception as exc:  # noqa: BLE001 -- a provider hiccup must degrade, never crash the turn
+            logger.warning(
+                "tool_loop_llm_call_failed",
+                agent=sub_agent.name,
+                iteration=iteration + 1,
+                error=str(exc),
+            )
+            # No answer is possible without a working LLM call - treat this
+            # the same as hitting the iteration cap: an explicit terminal
+            # state the caller must escalate, never a raised exception that
+            # crashes the whole turn on a transient rate limit or timeout.
+            return ToolLoopResult(final_answer=None, tool_calls=tool_calls, hit_cap=True)
 
         try:
             decision = json.loads(raw)

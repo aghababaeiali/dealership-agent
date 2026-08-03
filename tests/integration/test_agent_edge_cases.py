@@ -15,6 +15,13 @@ its own test:
     sequence (find a vehicle, then look up a related policy) within its
     own loop.
 
+Also covers a fifth case discovered via the live smoke test
+(scripts/smoke_test.py, run against real Groq): the LLM *provider* call
+itself failing (e.g. the 413/rate-limit response Groq's free tier returns
+once tool observations grow the conversation past its per-minute token
+budget), which is a different failure mode from a tool call failing and
+was not originally caught.
+
 Runs against the real MCP stdio transport and real Postgres/pgvector, no
 live LLM calls.
 """
@@ -30,10 +37,35 @@ from sqlalchemy.engine import Engine
 
 from dealership_agent.agents.runner import run_turn
 from dealership_agent.config import get_settings
-from dealership_agent.llm.base import Message
+from dealership_agent.llm.base import LLMProvider, Message
 from dealership_agent.tools.identity import RequestIdentity
 
 settings = get_settings()
+
+_AGENT_PROMPT_MARKERS = {
+    "router": "routing classifier",
+    "sales": "sales assistant",
+    "synthesis": "helpful, honest assistant",
+}
+
+
+class _SalesLLMOutage(LLMProvider):
+    """A minimal LLMProvider that raises when called for the sales agent
+    specifically (simulating a provider-side failure like a rate limit or
+    timeout) and otherwise behaves like a normal scripted fake."""
+
+    def __init__(self, responses: dict[str, list[str]]) -> None:
+        self._queues = {key: list(value) for key, value in responses.items()}
+
+    def complete(self, messages: list[Message], *, model: str) -> str:
+        system = messages[0].content if messages and messages[0].role == "system" else ""
+        agent = next(
+            (name for name, marker in _AGENT_PROMPT_MARKERS.items() if marker in system),
+            "unknown",
+        )
+        if agent == "sales":
+            raise RuntimeError("simulated Groq rate-limit error (413 Payload Too Large)")
+        return self._queues[agent].pop(0)
 
 
 class CustomerFixture(TypedDict):
@@ -220,6 +252,45 @@ class TestIterationCapEscalates:
 
         # Hitting the cap must route to escalate, not straight to
         # synthesis with no result.
+        escalate_result = result["escalate_result"]
+        assert escalate_result is not None
+        assert escalate_result["status"] == "escalated"
+        assert (
+            result["final_response"]
+            == "I've escalated this to a human agent who will follow up shortly."
+        )
+
+
+class TestLLMProviderErrorEscalates:
+    """Discovered live: a real Groq rate-limit response on iteration 2 of
+    the sales loop crashed the whole turn uncaught, because the loop only
+    wrapped the tool-call, not the LLM-provider call. A provider hiccup
+    must degrade the same way an iteration-cap hit does: escalate, never
+    propagate an exception out of run_turn."""
+
+    async def test_a_failing_llm_call_escalates_instead_of_crashing_the_turn(
+        self, customer: CustomerFixture
+    ) -> None:
+        outage_llm = _SalesLLMOutage(
+            {
+                "router": [json.dumps({"routes": ["sales"]})],
+                "synthesis": ["I've escalated this to a human agent who will follow up shortly."],
+            }
+        )
+        identity = RequestIdentity(
+            session_id="sess-llm-outage", customer_id=customer["customer_id"]
+        )
+
+        result = await run_turn(
+            outage_llm, identity, [Message(role="user", content="Find me a cheap SUV")]
+        )
+
+        sales_result = result["sales_result"]
+        assert sales_result is not None
+        assert sales_result["hit_cap"] is True
+        assert sales_result["final_answer"] is None
+        assert sales_result["tool_calls"] == []
+
         escalate_result = result["escalate_result"]
         assert escalate_result is not None
         assert escalate_result["status"] == "escalated"
