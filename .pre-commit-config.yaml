@@ -17,6 +17,8 @@ repos:
           - alembic>=1.13
           - pgvector>=0.3
           - pytest>=8.3
+          - mcp>=1.0
+          - structlog>=24.4
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
