@@ -22,7 +22,7 @@ from __future__ import annotations
 import boto3
 from mypy_boto3_bedrock_runtime.type_defs import MessageTypeDef, SystemContentBlockTypeDef
 
-from dealership_agent.llm.base import LLMProvider, Message
+from dealership_agent.llm.base import LLMProvider, Message, normalize_llm_response
 
 
 class BedrockProvider(LLMProvider):
@@ -44,4 +44,5 @@ class BedrockProvider(LLMProvider):
             system=system,
         )
         content = response["output"]["message"]["content"]
-        return "".join(block["text"] for block in content if "text" in block)
+        raw = "".join(block["text"] for block in content if "text" in block)
+        return normalize_llm_response(raw)

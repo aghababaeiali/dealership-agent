@@ -17,7 +17,7 @@ import time
 import groq
 import structlog
 
-from dealership_agent.llm.base import LLMProvider, Message
+from dealership_agent.llm.base import LLMProvider, Message, normalize_llm_response
 
 logger = structlog.get_logger(__name__)
 
@@ -58,7 +58,7 @@ class GroqProvider(LLMProvider):
                     model=model,
                     messages=[{"role": m.role, "content": m.content} for m in messages],  # type: ignore[misc]
                 )
-                return response.choices[0].message.content or ""
+                return normalize_llm_response(response.choices[0].message.content or "")
             except _RETRYABLE_EXCEPTIONS as exc:
                 attempt += 1
                 if attempt > self._max_retries:

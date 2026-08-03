@@ -117,3 +117,31 @@ the Bedrock API.
   for mypy strict). Neither Terraform nor IAM policy work is in scope for
   this step - only application-level credential *usage* (the standard
   chain), not provisioning.
+
+## Update (Step 10): response normalization closed the live-transcript gap
+
+The Step 9 status report disclosed a live finding: a real Bedrock
+conversation fell back to `clarify` because Claude wrapped the router's
+JSON in a ` ```json ` fence that `nodes.py`'s `json.loads()` couldn't
+parse. Step 10, Part A fixed this properly, in the provider layer rather
+than in `nodes.py` - see `llm/base.py::normalize_llm_response()`, called
+by both `GroqProvider.complete()` and `BedrockProvider.complete()` before
+returning. Re-testing surfaced two *further* Claude-specific quirks
+beyond the originally-reported fence-wrapping, both now handled by the
+same function:
+
+- Claude sometimes falls back to its own tool-call convention even with
+  no native `toolConfig` offered - wrapping the intended single object in
+  a `<function_calls>[...]</function_calls>` tag, with the object itself
+  wrapped in a one-element JSON array.
+- Claude sometimes drops this codebase's `"action"` discriminator key
+  entirely, replying with just `{"tool": ..., "arguments": ...}` (its own
+  native shape) or `{"answer": ...}` - both are unambiguous to infer from
+  the codebase's own fixed set of JSON schemas (no other node's schema
+  uses either key combination), so the discriminator is added back
+  rather than left for the caller to fail on.
+
+A live conversation re-run against real Bedrock after this fix reached
+the sales sub-agent, called `search_listings` for real, and returned ten
+concrete vehicles - not a `clarify` fallback. See the Step 10 status
+report for the full transcript, token counts, and cost.
