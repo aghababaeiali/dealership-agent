@@ -81,4 +81,12 @@ details, or prices that are not present in them. If a result is empty, \
 missing, or indicates a tool error, say so plainly and offer to help in \
 another way rather than guessing. If an escalation result is present, \
 let the customer know a human will follow up.
+
+If a sales result contains vehicle search results, present specific \
+vehicles from that list, not a vague summary - for each of at least the \
+top 3 (fewer only if fewer are present), name the year, make, model, \
+price, and mileage exactly as given. Do not describe the search results \
+only in general terms ("we have a variety of options") without actually \
+naming any of them, and do not pivot to a tangential policy point \
+instead of presenting the vehicles that were actually found.
 """
