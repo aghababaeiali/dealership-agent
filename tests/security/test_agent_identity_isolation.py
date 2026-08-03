@@ -43,6 +43,14 @@ def owner_engine() -> Iterator[Engine]:
 @pytest.fixture
 def customer_with_order(owner_engine: Engine) -> Iterator[OrderFixture]:
     suffix = uuid.uuid4().hex[:8]
+    # Deliberately a large, distinctive id (9 digits) rather than letting
+    # the small serial sequence assign one: a short id like "146" is a
+    # realistic false-positive risk for the substring check below, since
+    # it can coincidentally appear inside an unrelated price, mileage, or
+    # similarity score pulled into the synthesis prompt from real search
+    # results. Every price/mileage in this dataset is well under 7 digits
+    # (see docs/DATA_PRICE_AUDIT.md), so a 9-digit id cannot collide.
+    distinctive_customer_id = 900_000_000 + (uuid.uuid4().int % 90_000_000)
     with owner_engine.begin() as conn:
         vehicle_id = conn.execute(
             text(
@@ -53,10 +61,14 @@ def customer_with_order(owner_engine: Engine) -> Iterator[OrderFixture]:
         ).scalar_one()
         customer_id = conn.execute(
             text(
-                "INSERT INTO customers (external_ref, email, full_name) "
-                "VALUES (:ref, :email, 'Identity Test Customer') RETURNING id"
+                "INSERT INTO customers (id, external_ref, email, full_name) "
+                "VALUES (:id, :ref, :email, 'Identity Test Customer') RETURNING id"
             ),
-            {"ref": f"identity-cust-{suffix}", "email": f"identity-{suffix}@example.com"},
+            {
+                "id": distinctive_customer_id,
+                "ref": f"identity-cust-{suffix}",
+                "email": f"identity-{suffix}@example.com",
+            },
         ).scalar_one()
         order_ref = conn.execute(
             text(
