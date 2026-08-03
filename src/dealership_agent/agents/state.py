@@ -19,11 +19,21 @@ from dealership_agent.tools.identity import RequestIdentity
 
 
 class ToolLoopResult(TypedDict):
-    """The outcome of one sub-agent's bounded tool-calling loop."""
+    """The outcome of one sub-agent's bounded tool-calling loop.
+
+    `hit_cap`, `llm_call_failed`, and `hit_budget_guard` are three distinct
+    ways a loop can end without a real answer - kept separate (rather than
+    one generic "failed" bool) so synthesis and monitoring can say
+    something honest and specific about which one happened, per Step 7's
+    Part C. A loop can only hit one of these per run (each is a terminal
+    return), but callers should not assume that - check all three.
+    """
 
     final_answer: str | None
     tool_calls: list[dict[str, Any]]
     hit_cap: bool
+    llm_call_failed: bool
+    hit_budget_guard: bool
 
 
 class GraphState(TypedDict, total=False):

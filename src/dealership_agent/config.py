@@ -41,6 +41,27 @@ class Settings(BaseSettings):
 
     groq_api_key: str = ""
 
+    # Step 7, Part B: explicit, configurable retry/backoff for LLM calls -
+    # replaces the provider SDK's own silent internal retry (a 49-second
+    # backoff with no application-visible log was judged unacceptable in
+    # Step 6's live smoke test). Exponential: base_delay * 2**attempt,
+    # capped at max_delay_seconds.
+    llm_retry_max_retries: int = 3
+    llm_retry_base_delay_seconds: float = 1.0
+    llm_retry_max_delay_seconds: float = 20.0
+
+    # Step 7, Part B: bound on one compacted tool observation fed back
+    # into the loop's message history (see agents/compaction.py).
+    loop_observation_max_chars: int = 800
+    # Step 7, Part B: approximate cumulative token budget for one
+    # sub-agent's tool-calling loop (agents/tokens.py's estimator). Set
+    # conservatively under Groq's free-tier 6000-TPM limit to leave
+    # headroom for the completion and for other concurrent usage; when a
+    # loop iteration's estimated prompt size would exceed this, the loop
+    # stops and synthesizes with whatever it already has rather than
+    # making a call likely to fail with a 413/429.
+    loop_token_budget: int = 4000
+
     aws_region: str = "us-east-1"
     aws_bedrock_role_arn: str = ""
 
