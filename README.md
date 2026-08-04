@@ -268,7 +268,16 @@ uv run python evals/run_action_claim_eval.py    # needs a real GROQ_API_KEY
 
 ## Deployment
 
-Not yet implemented. The intended target is AWS ECS Fargate via
-Terraform (`infra/terraform/`, currently a placeholder) with GitHub
-Actions OIDC for CI/CD — no long-lived AWS keys, no Kubernetes, per
-[CLAUDE.md](CLAUDE.md)'s locked architecture decisions.
+AWS ECS Fargate via Terraform (`infra/terraform/`), fronted by an ALB,
+with RDS Postgres+pgvector in a private subnet and no NAT Gateway
+(deliberately - see `infra/terraform/vpc.tf`). GitHub Actions deploys via
+OIDC (`.github/workflows/deploy.yml`, manual dispatch only) — no
+long-lived AWS keys anywhere, no Kubernetes, per [CLAUDE.md](CLAUDE.md)'s
+locked architecture decisions.
+
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full runbook
+(bootstrap, apply, verify, enabling the deploy workflow, and teardown)
+and [`infra/terraform/COST.md`](infra/terraform/COST.md) for the
+per-resource cost breakdown — read that one first, since this
+deployment costs real money the moment it's applied (roughly $45-50/month
+if left running).
