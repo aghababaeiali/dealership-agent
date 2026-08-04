@@ -36,7 +36,7 @@ terraform {
     # state bucket existing yet, comment this whole block out
     # temporarily, `rm -rf .terraform .terraform.lock.hcl`, and
     # `terraform init` again - then restore it before committing.
-    bucket         = "REPLACE-WITH-BOOTSTRAP-STATE-BUCKET-NAME"
+    bucket         = "dealership-agent-tfstate-abd074d2"
     key            = "dealership-agent/terraform.tfstate"
     region         = "eu-west-1"
     dynamodb_table = "dealership-agent-tfstate-lock"
