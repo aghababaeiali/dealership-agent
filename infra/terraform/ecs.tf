@@ -45,13 +45,14 @@ resource "aws_ecs_task_definition" "app" {
         { name = "JWT_ISSUER", value = "dealership-agent" },
         { name = "JWT_AUDIENCE", value = "dealership-agent-api" },
         { name = "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", value = "30" },
-        # Real production JWT key provisioning is a documented follow-up
-        # (docs/DEPLOYMENT.md), same as the ALB's TLS follow-up - there is
-        # no real external identity provider in this project yet, only
-        # the dev-only scripts/mint_dev_token.py. Until a real keypair is
-        # provisioned at this path inside the container, authenticated
-        # endpoints will fail closed (never fail open) with a 401.
-        { name = "JWT_PUBLIC_KEY_PATH", value = "/app/prod_keys/jwt_public.pem" },
+        # No real external identity provider in this project yet, only
+        # the dev-only scripts/mint_dev_token.py - docker-entrypoint.sh
+        # writes the JWT_PUBLIC_KEY_PEM secret below out to this path at
+        # container start (world-writable /tmp, since the non-root
+        # appuser doesn't own /app itself). Still dev-grade key material
+        # reused for a live deployment, not a real production IdP - see
+        # docs/DEPLOYMENT.md.
+        { name = "JWT_PUBLIC_KEY_PATH", value = "/tmp/jwt_public.pem" },
         { name = "RATE_LIMIT_PER_CUSTOMER_PER_MINUTE", value = "20" },
         { name = "RATE_LIMIT_GLOBAL_PER_MINUTE", value = "200" },
       ]
@@ -59,6 +60,7 @@ resource "aws_ecs_task_definition" "app" {
       secrets = [
         { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn },
         { name = "GROQ_API_KEY", valueFrom = aws_ssm_parameter.groq_api_key.arn },
+        { name = "JWT_PUBLIC_KEY_PEM", valueFrom = aws_ssm_parameter.jwt_public_key_pem.arn },
       ]
 
       logConfiguration = {

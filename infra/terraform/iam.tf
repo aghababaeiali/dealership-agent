@@ -43,7 +43,7 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
   statement {
     sid     = "ReadTaskSecrets"
     actions = ["ssm:GetParameters", "ssm:GetParameter"]
-    # All 4 parameters, not just the 2 the running service's task
+    # All 5 parameters, not just the 3 the running service's task
     # definition (ecs.tf) actually references - this role is reused
     # as-is for the one-off migration task (docs/DEPLOYMENT.md), which
     # needs DATABASE_MIGRATION_URL/APP_DB_PASSWORD too.
@@ -52,6 +52,7 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
       aws_ssm_parameter.database_migration_url.arn,
       aws_ssm_parameter.app_db_password.arn,
       aws_ssm_parameter.groq_api_key.arn,
+      aws_ssm_parameter.jwt_public_key_pem.arn,
     ]
   }
 
@@ -115,6 +116,7 @@ data "aws_iam_policy_document" "ecs_task" {
       aws_ssm_parameter.database_migration_url.arn,
       aws_ssm_parameter.app_db_password.arn,
       aws_ssm_parameter.groq_api_key.arn,
+      aws_ssm_parameter.jwt_public_key_pem.arn,
     ]
   }
 

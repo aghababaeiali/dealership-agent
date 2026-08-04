@@ -51,3 +51,15 @@ resource "aws_ssm_parameter" "groq_api_key" {
 
   tags = { Name = "${local.name_prefix}-groq-api-key" }
 }
+
+resource "aws_ssm_parameter" "jwt_public_key_pem" {
+  name = "/${local.name_prefix}/JWT_PUBLIC_KEY_PEM"
+  type = "SecureString"
+  # Reuses the local dev keypair (scripts/mint_dev_token.py) so this
+  # deployment can actually be verified end-to-end (Step 12) - there is
+  # still no real production identity provider. docker-entrypoint.sh
+  # writes this out to JWT_PUBLIC_KEY_PATH at container start.
+  value = file("${path.module}/../../dev_keys/dev_jwt_public.pem")
+
+  tags = { Name = "${local.name_prefix}-jwt-public-key" }
+}

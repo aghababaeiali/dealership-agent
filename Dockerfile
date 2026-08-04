@@ -50,6 +50,7 @@ COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /app/.cache /app/.cache
 COPY --chown=appuser:appuser src/ src/
 COPY --chown=appuser:appuser data/policies/ data/policies/
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV HF_HOME=/app/.cache/huggingface
@@ -71,4 +72,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)" || exit 1
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "dealership_agent.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
