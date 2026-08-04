@@ -19,10 +19,20 @@ never read from Settings.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import boto3
-from mypy_boto3_bedrock_runtime.type_defs import MessageTypeDef, SystemContentBlockTypeDef
 
 from dealership_agent.llm.base import LLMProvider, Message, normalize_llm_response
+
+if TYPE_CHECKING:
+    # mypy_boto3_bedrock_runtime (boto3-stubs) is a type-checking-only dev
+    # dependency (pyproject.toml's dev group), never installed in the
+    # production image (Dockerfile's `--no-dev` install) - importing it
+    # for real at runtime crashes the container on startup. Guarded here
+    # so mypy still sees the precise TypedDicts, but nothing is actually
+    # imported when this module runs for real.
+    from mypy_boto3_bedrock_runtime.type_defs import MessageTypeDef, SystemContentBlockTypeDef
 
 
 class BedrockProvider(LLMProvider):

@@ -22,6 +22,11 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
     "sentence-transformers>=3.2",
+    # Direct dependency (not just transitive via sentence-transformers)
+    # specifically so the [tool.uv.sources] CPU-only override below
+    # actually applies - uv only honors a source override for a package
+    # listed as a direct project dependency.
+    "torch>=2.0",
     "langfuse>=2.53,<3",
     "groq>=0.11",
     "python-jose[cryptography]>=3.3",
@@ -51,6 +56,23 @@ data = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Step 11, Part A: this project never runs on a GPU - the self-hosted
+# embedding model (retrieval/embedder.py) is a small, cheap-to-run CPU
+# workload by design, on both a dev laptop and an ECS Fargate task. The
+# default PyPI torch wheel on Linux bundles the full CUDA/nvidia stack
+# (cuBLAS, cuDNN, NCCL, etc.) regardless, which was measured at several
+# GB of pure dead weight in the Docker image - directly working against
+# "cost control is a first-class requirement" (larger images cost more
+# to store in ECR and take longer to pull on every Fargate task start).
+# Pinning torch to PyTorch's own CPU-only wheel index removes all of it.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dealership_agent"]
