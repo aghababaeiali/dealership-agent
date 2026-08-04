@@ -1,4 +1,4 @@
-# dealership-agent — Project Constitution
+# dealership-agent: Project Constitution
 
 This file is the project constitution. Read it and obey it in every session.
 Anything under "locked" or "invariant" below must not be changed without
@@ -25,9 +25,13 @@ explicitly asking the user first.
 - Observability: self-hosted Langfuse.
 - IaC: Terraform. CI: GitHub Actions with OIDC, no long-lived AWS keys.
 - Tools are exposed via an MCP server (framework-independent tool layer). The
-  LangGraph agent consumes them as an MCP client. Identity injection and
-  authorization happen at the MCP server boundary.
-  - Dependencies: `langchain-mcp-adapters` and `mcp`.
+  LangGraph agent consumes them as a real MCP client over stdio, one
+  subprocess per conversation turn. Identity injection and authorization
+  happen at the MCP server boundary.
+  - Dependency: `mcp`. `langchain-mcp-adapters` remains declared in
+    `pyproject.toml` but is not imported anywhere in `src/` as of ADR 0004;
+    see `docs/adr/0003-mcp-client-in-process-bridge.md` and
+    `docs/adr/0004-mcp-identity-propagation.md` for why.
 
 ## The Core Security Invariant (highest priority rule in this codebase)
 

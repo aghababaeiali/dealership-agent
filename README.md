@@ -7,13 +7,35 @@ backed by Postgres/pgvector, behind a JWT-authenticated FastAPI edge. It
 exists as a portfolio piece demonstrating a security-first, eval-driven
 approach to building agentic systems: the core design question this
 project answers is not "can the agent find a car?" but "can the LLM ever
-be tricked into reading someone else's data?" — the answer is
-structurally no, not just prompted-to-refuse.
+be tricked into reading someone else's data?" The answer is structurally
+no, not just prompted-to-refuse.
 
 See [CLAUDE.md](CLAUDE.md) for the full set of locked architecture
 decisions and engineering standards this project is built to, and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the longer technical
 write-up with links to every ADR.
+
+## How to evaluate this project (5 minutes)
+
+If you only have a few minutes, these three things carry the most
+signal:
+
+1. **The RLS red-test** ([Security Model](#security-model) below): a
+   live, three-row before/after/after-again table showing that disabling
+   Row-Level Security turns "customer A's query returns nothing" into
+   "customer A's query returns customer B's order" - the failure this
+   architecture exists to make structurally impossible, demonstrated
+   directly rather than just asserted.
+2. **The action-claim eval, including the reverted change**
+   ([Evaluation](#evaluation) below): three real experiments measured
+   against a labelled 71-case eval set, one of which (span-validation)
+   looked plausible and measured worse, so it was reverted rather than
+   shipped. The revert is documented in
+   [ADR 0008](docs/adr/0008-span-validation-revert.md), not hidden.
+3. **The live deployment verification** ([Deployed to AWS](#deployed-to-aws)
+   below): the security boundary re-confirmed against real AWS
+   infrastructure, with CloudWatch evidence that Row-Level Security, not
+   an application-level filter, is what rejected a cross-customer query.
 
 ## Architecture
 
@@ -22,7 +44,7 @@ flowchart TB
     Client(["Client"]) -->|"Bearer JWT"| API["FastAPI edge<br/>auth · rate limit · /chat /listings /healthz /readyz"]
     API -->|"verified RequestIdentity<br/>(never in a prompt or tool schema)"| Supervisor["LangGraph Supervisor<br/>router → merge → synthesis → verify_claims"]
 
-    subgraph Boundary["Permission boundary — tool sets bound at construction, disjoint by design"]
+    subgraph Boundary["Security boundary: tool sets bound at construction, disjoint by design"]
         direction LR
         Sales["Sales Agent<br/>read-only, public data"]
         Account["Account Agent<br/>customer-scoped"]
@@ -34,11 +56,11 @@ flowchart TB
     Sales -->|"search_listings<br/>search_policy_docs"| MCP["MCP Tool Server<br/>(fresh subprocess per turn)"]
     Account -->|"get_order_status<br/>list_my_orders<br/>escalate_to_human"| MCP
 
-    MCP -->|"identity bound via env vars<br/>at subprocess spawn — never a tool argument"| DB[("PostgreSQL + pgvector<br/>Row-Level Security, FORCEd")]
+    MCP -->|"identity bound via env vars<br/>at subprocess spawn, never a tool argument"| DB[("PostgreSQL + pgvector<br/>Row-Level Security, FORCEd")]
 ```
 
 One FastAPI service (no microservices, per CLAUDE.md). A request's
-identity is authenticated once, at the edge, from a verified JWT — never
+identity is authenticated once, at the edge, from a verified JWT, never
 from the request body. The Supervisor fans out to whichever sub-agent(s)
 a message needs (a single message can touch both, e.g. "find me a cheap
 SUV and tell me if my order shipped"), each sub-agent only ever sees its
@@ -53,26 +75,26 @@ reads.** Everything below exists to make that structurally true, not
 merely instructed.
 
 - **Identity-free tool schemas.** `get_order_status(order_ref)`,
-  `list_my_orders(status_filter?)`, `escalate_to_human(summary, reason)`
-  — no tool the model can see ever has a `customer_id`, `tenant_id`, or
+  `list_my_orders(status_filter?)`, `escalate_to_human(summary, reason)`:
+  no tool the model can see ever has a `customer_id`, `tenant_id`, or
   any identity parameter in its schema. There is no field for a
   compromised or confused model to fill in with someone else's ID, because
   that field does not exist.
 - **The chokepoint.** Every tool call is executed inside
-  `tools/scope.py::customer_scoped_connection()` — the one and only place
-  a database connection is opened for a tool. There is no second code path
-  that reaches Postgres.
+  `tools/scope.py::customer_scoped_connection()`, the one and only place
+  a database connection is opened for a tool. There is no second code
+  path that reaches Postgres.
 - **MCP session identity, not a tool argument.** One conversation turn
   spawns one MCP tool-server subprocess; the verified customer's identity
   is bound to that subprocess once, via environment variables at spawn
   time (`agents/mcp_session.py`), and read into a contextvar for the
   process's whole lifetime. It is never passed as part of a `tools/call`
-  request — see [ADR 0004](docs/adr/0004-mcp-identity-propagation.md) for
+  request. See [ADR 0004](docs/adr/0004-mcp-identity-propagation.md) for
   why a per-call channel was rejected even though MCP supports one.
 - **Postgres Row-Level Security, defense in depth.** Every customer-scoped
   table has RLS enabled *and* `FORCE`d (so it applies even to the table
   owner), with policies comparing each row's `customer_id` against
-  `current_setting('app.customer_id', true)` — which returns `NULL`, not
+  `current_setting('app.customer_id', true)`, which returns `NULL`, not
   an error, when unset, and `column = NULL` is never true in SQL. An
   absent scope yields **zero rows**, never every row: the failure mode is
   closed, not open.
@@ -89,8 +111,8 @@ once, live, against a disposable database, specifically for this README):
 
 Disabling the exact safeguard this project relies on turns "customer A's
 query returns nothing" into "customer A's query returns customer B's
-order" — which is precisely the failure this architecture is designed to
-make structurally impossible, not just unlikely.
+order," precisely the failure this architecture is designed to make
+structurally impossible, not just unlikely.
 
 The same invariant is checked directly in
 [`tests/security/`](tests/security/): tool schemas contain no identity
@@ -116,16 +138,17 @@ tool result actually backs?
 | Two-stage + span-validation (an attempted refinement) | 0.933 / 0.636 / 0.757 | 0.857 / 0.980 / 0.914 | 0.873 |
 
 The third row is the point of having an eval set. It looked like a
-plausible improvement — validate the specific span a verifier flags as a
-claim, discard findings that don't hold up in isolation — and it measured
-*worse*: CLEAN precision dropped from 0.938 to 0.857, because the
-isolated-span re-check started waving through genuine violations like
+plausible improvement, validating the specific span a verifier flags as a
+claim and discarding findings that don't hold up in isolation, and it
+measured *worse*: CLEAN precision dropped from 0.938 to 0.857, because
+the isolated-span re-check started waving through genuine violations like
 "Your request has been escalated to our team" (passive voice loses the
-claim when re-checked out of context). Per this project's own rule — if
-a change measures worse, revert it and say so — it was reverted, and the
-two-stage design (row two) is what's actually shipped. A number that
-doesn't move the way you hoped is the eval set doing its job, not a
-failure to hide.
+claim when re-checked out of context). Per this project's own rule, if
+a change measures worse, revert it and say so: it was reverted, and the
+two-stage design (row two) is what's actually shipped. See
+[ADR 0008](docs/adr/0008-span-validation-revert.md) for the full record
+of this experiment. A number that doesn't move the way you hoped is the
+eval set doing its job, not a failure to hide.
 
 ## Known Limitations
 
@@ -141,17 +164,17 @@ Stated plainly, not hidden:
   to 0.864 recall on true violations means roughly one in seven genuine
   false claims is missed, in exchange for cutting false positives on
   benign replies by more than 3x. This tradeoff was deliberate and
-  measured, not accidental — but it is a real cost, not a free win.
+  measured, not accidental, but it is a real cost, not a free win.
 - **Groq's free tier rate-limits aggressively** (6,000 tokens/minute at
   time of writing). The loop token budget guard
   (`Settings.loop_token_budget`) and explicit logged backoff
   (`llm/groq_provider.py`) exist specifically to degrade honestly under
-  this ceiling rather than crash or hang — but it remains a real
+  this ceiling rather than crash or hang, but it remains a real
   throughput constraint for local dev.
 - **No native tool-calling protocol.** Both providers speak a
   structured-JSON-in-plain-text convention
   (`{"action": "call_tool", ...}`) rather than the Converse API's or
-  Groq's native function-calling — a deliberate choice so both providers
+  Groq's native function-calling, a deliberate choice so both providers
   share one interface (see
   [ADR 0007](docs/adr/0007-bedrock-provider-and-model-routing.md)), at
   the cost of needing response normalization
@@ -180,7 +203,7 @@ real Postgres+pgvector service container), `security` (a **separate**
 required job, so a security-test failure shows up as its own distinct
 red X, never buried in a general test log), and `build` (Docker image
 build, no push). A sixth job, `eval`, runs the action-claim eval on a
-weekly schedule or manual dispatch only — never per-commit — since it
+weekly schedule or manual dispatch only, never per-commit, since it
 makes real, non-deterministic LLM calls.
 
 **Maintainer setup required before the scheduled `eval` job will run**:
@@ -190,7 +213,7 @@ add a `GROQ_API_KEY` repository secret (Settings → Secrets and variables
 `LLM_MODEL_CLASSIFIER`/`LLM_MODEL_SYNTHESIS` repository *variables* if you
 want the eval to run against different models than your local `.env`.
 The `lint`/`typecheck`/`test`/`security`/`build` jobs need no secrets at
-all — they never make a live LLM call (see `tests/conftest.py`'s
+all: they never make a live LLM call (see `tests/conftest.py`'s
 `FakeLLMProvider`).
 
 ## Local Setup
@@ -209,7 +232,7 @@ cp .env.example .env
 # Edit .env: at minimum set POSTGRES_*/APP_DB_*/DATABASE_*, a real
 # GROQ_API_KEY (free, from console.groq.com), and JWT_PUBLIC_KEY_PATH /
 # JWT_PRIVATE_KEY_PATH (e.g. dev_keys/dev_jwt_public.pem /
-# dev_keys/dev_jwt_private.pem — the next script below generates these
+# dev_keys/dev_jwt_private.pem: the next script below generates these
 # files if they don't exist yet).
 
 # 3. Start Postgres (+ pgvector) and a self-hosted Langfuse instance
@@ -270,16 +293,16 @@ uv run python evals/run_action_claim_eval.py    # needs a real GROQ_API_KEY
 
 AWS ECS Fargate via Terraform (`infra/terraform/`), fronted by an ALB,
 with RDS Postgres+pgvector in a private subnet and no NAT Gateway
-(deliberately - see `infra/terraform/vpc.tf`). GitHub Actions deploys via
-OIDC (`.github/workflows/deploy.yml`, manual dispatch only) — no
-long-lived AWS keys anywhere, no Kubernetes, per [CLAUDE.md](CLAUDE.md)'s
-locked architecture decisions.
+(deliberately, see [Why these choices](docs/ARCHITECTURE.md#why-these-choices-not-the-alternatives)).
+GitHub Actions deploys via OIDC (`.github/workflows/deploy.yml`, manual
+dispatch only), no long-lived AWS keys anywhere, no Kubernetes, per
+[CLAUDE.md](CLAUDE.md)'s locked architecture decisions.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full runbook
 (bootstrap, apply, verify, enabling the deploy workflow, and teardown)
 and [`infra/terraform/COST.md`](infra/terraform/COST.md) for the
-per-resource cost breakdown — read that one first, since this
-deployment costs real money the moment it's applied (roughly $45-50/month
+per-resource cost breakdown: read that one first, since this
+deployment costs real money the moment it's applied (roughly $58-70/month
 if left running).
 
 ### Deployed to AWS
@@ -290,7 +313,7 @@ infrastructure, not just planned on paper: 42 resources in `eu-west-1`
 an ALB, ECR, IAM roles, SSM parameters, VPC/subnets/security groups) via
 `terraform apply`, seeded with real vehicle listings and policy
 embeddings, then torn down again (`terraform destroy`) once verification
-was complete — see the teardown section of `docs/DEPLOYMENT.md`.
+was complete. See the teardown section of `docs/DEPLOYMENT.md`.
 
 **The security boundary held under live conditions.** With two seeded
 customers, customer A's authenticated `/chat` request for customer B's
@@ -298,7 +321,7 @@ order came back "not found" instead of leaking it. This was confirmed at
 two independent layers, not just the chat response text: CloudWatch logs
 for the tool call itself show the database query returned `row_count: 0`
 for the cross-customer request versus `row_count: 1` for the same
-customer asking about their own order — proof the Row-Level Security
+customer asking about their own order, proof the Row-Level Security
 policy is what's rejecting the query, not an application-level filter
 that happened to return the right answer.
 
@@ -314,7 +337,7 @@ that happened to return the right answer.
   `asyncio.to_thread`.
 - The Bedrock IAM policy scoped the foundation-model resource ARN to a
   single region. Cross-region ("`eu.`"-prefixed) inference profiles
-  don't guarantee the underlying request lands in that region — a live
+  don't guarantee the underlying request lands in that region: a live
   call actually routed to `eu-north-1` instead of the configured
   `eu-west-1`, and AWS checks the foundation-model resource against
   whichever region the request lands in, not the caller's own region.
@@ -322,11 +345,11 @@ that happened to return the right answer.
   concern that a local Bedrock call (or a unit test) with a single fixed
   region would never exercise.
 
-Both are the kind of concurrency- and region-routing bugs that only show
-up under actual multi-AZ, load-balanced, cross-region conditions — the
+Both are the kind of concurrency and region-routing bugs that only show
+up under actual multi-AZ, load-balanced, cross-region conditions, the
 reason "verify against a real deployment" is its own step, not assumed
 from a clean `terraform apply` and a passing test suite.
 
-Cost while live: roughly $45-50/month if left running (see
+Cost while live: roughly $58-70/month if left running (see
 `infra/terraform/COST.md`); this deployment was torn down immediately
 after verification, so actual spend was a small fraction of that.

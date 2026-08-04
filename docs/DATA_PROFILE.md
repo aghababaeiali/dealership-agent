@@ -31,7 +31,7 @@ The following columns contain the literal string `[PREMIUM]` for some or all row
 - Average length: **1703 characters** (non-null, non-redacted values)
 - Fill rate: 98.5%
 
-This means listing descriptions do **not** need to be generated synthetically — real marketing copy is present in the source data.
+This means listing descriptions do **not** need to be generated synthetically: real marketing copy is present in the source data.
 
 ## Usable columns for structured filters
 

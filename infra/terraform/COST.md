@@ -10,7 +10,7 @@ on-demand, eu-west-1, at time of writing.
 |---|---|---|
 | **ALB** | ~$16-20/month | Fixed hourly charge (~$0.0252/hr × 730h ≈ $18) plus LCU usage charges - negligible at this traffic level. **One of the three expensive resources.** |
 | **RDS db.t4g.micro** | ~$13-16/month | Instance-hours (~$0.018/hr × 730h ≈ $13) + 20 GB gp3 storage (~$2.30) + 1-day backup storage (minimal). Single-AZ, no read replica. **One of the three expensive resources.** |
-| **ECS Fargate task** (0.25 vCPU / 1 GB, 1 task, 24/7) | ~$11-13/month | ~$0.033/vCPU-hr × 0.25 × 730h + ~$0.0037/GB-hr × 1 × 730h. **One of the three expensive resources.** |
+| **ECS Fargate task** (1 vCPU / 2 GB, 1 task, 24/7) | ~$27-32/month | ~$0.033/vCPU-hr × 1 × 730h + ~$0.0037/GB-hr × 2 × 730h. Sized up from an initial 0.25 vCPU / 1 GB after a live deployment showed that was too small (see `docs/DEPLOYMENT.md`'s troubleshooting section) - the `/readyz` health check spawns a fresh MCP subprocess per call, and under-provisioning caused the service to fail its own health checks indefinitely. **One of the three expensive resources.** |
 | NAT Gateway | **$0** | Deliberately not provisioned - see vpc.tf. Would otherwise be ~$33/month fixed + ~$0.045/GB processed, for no benefit at this scale. |
 | ECR storage | ~$0.10-0.50/month | 5 images × a few hundred MB compressed × $0.10/GB-month. Lifecycle policy caps this from growing unbounded. |
 | CloudWatch Logs | <$1/month | 7-day retention, low request volume - both ingestion ($0.57/GB) and storage ($0.03/GB-month) are small at this scale. |
@@ -19,7 +19,7 @@ on-demand, eu-west-1, at time of writing.
 | Data transfer out | ~$0-2/month | First 1 GB/month free, then ~$0.09/GB - depends on actual traffic; negligible for a low-traffic demo. |
 | IAM roles/policies, OIDC provider, AWS Budgets (first 2 budgets) | **$0** | All free. |
 
-**Baseline always-on total: roughly $42-52/month** if left running continuously; the ALB, RDS, and Fargate task together account for essentially all of it.
+**Baseline always-on total: roughly $58-70/month** if left running continuously; the ALB, RDS, and Fargate task together account for essentially all of it.
 
 ## Usage-based, NOT always-on
 
@@ -31,8 +31,8 @@ on-demand, eu-west-1, at time of writing.
 
 Be clear-eyed about this: the budget alarm this config creates (`budgets.tf`)
 fires at $8 (80%) and $10 (100%) of **monthly** spend - but the baseline
-always-on cost above is roughly **4-5x that**. Left running for a full
-month, this deployment will cost approximately $45-50, not $10.
+always-on cost above is roughly **6-7x that**. Left running for a full
+month, this deployment will cost approximately $58-70, not $10.
 
 The $10 threshold is intentionally an early tripwire, not a cap AWS
 enforces - **AWS Budgets can only notify, never stop resources from

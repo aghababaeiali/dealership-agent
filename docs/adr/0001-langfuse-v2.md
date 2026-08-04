@@ -40,7 +40,7 @@ Postgres-backed Langfuse v2 can serve well, the upgrade path is:
 3. Bump the `langfuse` Python dependency to `>=3,<4` in the same change that
    cuts over the server image tag, so client and server stay in lockstep.
 
-This should be a deliberate, scoped migration — not a default `latest` tag
+This should be a deliberate, scoped migration, not a default `latest` tag
 that pulls it in silently.
 
 ## Consequences
