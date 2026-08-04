@@ -62,7 +62,9 @@ data/processed/
 infra/terraform/**/.terraform/
 infra/terraform/**/*.tfstate
 infra/terraform/**/*.tfstate.*
-infra/terraform/**/.terraform.lock.hcl
+# .terraform.lock.hcl is NOT ignored - Terraform's own guidance is to
+# commit it, same reasoning as uv.lock: pins exact provider versions so
+# `terraform init` is reproducible.
 infra/terraform/**/*.tfvars
 !infra/terraform/**/*.tfvars.example
 
