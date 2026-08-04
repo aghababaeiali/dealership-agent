@@ -80,11 +80,23 @@ locals {
   # bedrock:InvokeModel on BOTH the inference profile ARN itself and the
   # underlying foundation-model ARN it invokes - foundation-model ARNs
   # have no account id segment (they're AWS-owned, shared resources).
+  #
+  # The inference-profile ARNs stay pinned to var.aws_region (that's
+  # where OUR profile resource lives), but the foundation-model region
+  # must be a wildcard: Step 12's live deployment hit a real
+  # AccessDeniedException because the "eu." cross-region profile actually
+  # routed a request to eu-north-1, not eu-west-1, and the foundation-
+  # model resource is checked against whichever region the request
+  # lands in - not the caller's own region. This is AWS's own documented
+  # pattern for cross-region inference IAM policies. It doesn't broaden
+  # which models or accounts are reachable (foundation-model ARNs are
+  # AWS-owned, not account-scoped) - only which AWS region is allowed to
+  # serve the exact same already-named model.
   bedrock_model_arns = [
     "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_classifier}",
     "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_synthesis}",
-    "arn:aws:bedrock:${var.aws_region}::foundation-model/${replace(var.bedrock_model_classifier, "eu.", "")}",
-    "arn:aws:bedrock:${var.aws_region}::foundation-model/${replace(var.bedrock_model_synthesis, "eu.", "")}",
+    "arn:aws:bedrock:*::foundation-model/${replace(var.bedrock_model_classifier, "eu.", "")}",
+    "arn:aws:bedrock:*::foundation-model/${replace(var.bedrock_model_synthesis, "eu.", "")}",
   ]
 }
 
