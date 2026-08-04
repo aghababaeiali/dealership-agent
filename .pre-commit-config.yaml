@@ -32,4 +32,4 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-added-large-files
-        exclude: ^uv\.lock$
+        exclude: ^(uv\.lock|docs/assets/.*\.gif)$
