@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 
 from dealership_agent.agents.mcp_session import open_mcp_session
 from dealership_agent.config import get_settings
+from dealership_agent.retrieval.embedder import embed_texts
 from dealership_agent.tools.identity import RequestIdentity
 
 settings = get_settings()
@@ -181,15 +182,72 @@ class TestListMyOrdersScoping:
         assert result.structuredContent is None
 
 
+class SearchFixture(TypedDict):
+    vehicle_id: int
+    external_ref: str
+    make: str
+
+
+@pytest.fixture
+def known_vehicle(owner_engine: Engine) -> Iterator[SearchFixture]:
+    """One vehicle this test owns end-to-end, embedded with the same
+    self-hosted model production search uses. The security property under
+    test is "public catalog access requires no session identity" - that
+    claim must stand or fall independently of whether any other process
+    has loaded catalog data into this environment, so the test seeds and
+    tears down its own row rather than relying on one existing already.
+    `make` is a per-run uuid-suffixed value so the structured `make`
+    filter can retrieve exactly this row, deterministically, regardless
+    of semantic similarity ranking or how much other data exists."""
+    suffix = uuid.uuid4().hex[:8]
+    external_ref = f"search-boundary-veh-{suffix}"
+    make = f"SecurityBoundaryTestMake{suffix}"
+    description = f"A security-boundary test listing, make {make}."
+    [vector] = embed_texts([description])
+
+    with owner_engine.begin() as conn:
+        vehicle_id = conn.execute(
+            text(
+                "INSERT INTO vehicles "
+                "(external_ref, year, make, model, mileage, is_available, description_clean) "
+                "VALUES (:ref, 2024, :make, 'Model', 10000, true, :desc) RETURNING id"
+            ),
+            {"ref": external_ref, "make": make, "desc": description},
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO vehicle_embeddings (vehicle_id, embedding, model_name) "
+                "VALUES (:vehicle_id, :embedding, :model_name)"
+            ),
+            {
+                "vehicle_id": vehicle_id,
+                "embedding": str(vector),
+                "model_name": settings.embedding_model_name,
+            },
+        )
+
+    yield {"vehicle_id": vehicle_id, "external_ref": external_ref, "make": make}
+
+    with owner_engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM vehicle_embeddings WHERE vehicle_id = :v"), {"v": vehicle_id}
+        )
+        conn.execute(text("DELETE FROM vehicles WHERE id = :v"), {"v": vehicle_id})
+
+
 class TestSearchListingsIsPublic:
-    async def test_search_listings_works_with_no_session_context(self) -> None:
+    async def test_search_listings_works_with_no_session_context(
+        self, known_vehicle: SearchFixture
+    ) -> None:
         anonymous = RequestIdentity(session_id="public-sales-session", customer_id=None)
         async with open_mcp_session(anonymous) as session:
             result = await session.call_tool(
-                "search_listings", {"query": "reliable family SUV", "limit": 3}
+                "search_listings",
+                {"query": known_vehicle["make"], "make": known_vehicle["make"], "limit": 3},
             )
 
         assert result.isError is False
         content = result.structuredContent
         assert content is not None
-        assert len(content["result"]) > 0
+        external_refs = {row["external_ref"] for row in content["result"]}
+        assert known_vehicle["external_ref"] in external_refs

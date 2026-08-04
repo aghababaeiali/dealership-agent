@@ -133,6 +133,14 @@ jobs:
           enable-cache: true
       - run: uv sync --group data
       - run: uv run alembic upgrade head
+      - name: Seed a small synthetic vehicle catalog
+        # Kept in sync with the `test` job's seeding, for consistency -
+        # tests/security/test_tool_boundary.py's own search-boundary test
+        # seeds and tears down its own vehicle regardless (see that
+        # file), so no security test's correctness actually depends on
+        # this step, but other tests should not be silently dependent on
+        # job ordering or on state left behind by a different job either.
+        run: uv run python scripts/seed_ci_vehicles.py
       - run: uv run python scripts/mint_dev_token.py --customer-id 1 > /dev/null
       - name: Run the security test suite
         run: uv run pytest tests/security -m "not requires_live_credentials"
