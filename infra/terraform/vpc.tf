@@ -137,7 +137,7 @@ resource "aws_security_group" "ecs_task" {
 
 resource "aws_security_group" "rds" {
   name        = "${local.name_prefix}-rds"
-  description = "RDS: inbound Postgres only from the ECS task's security group. No outbound rule needed/added."
+  description = "RDS: inbound Postgres only from the ECS task security group. No outbound rule needed/added."
   vpc_id      = aws_vpc.main.id
 
   ingress {
