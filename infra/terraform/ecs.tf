@@ -16,6 +16,15 @@ resource "aws_ecs_task_definition" "app" {
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
+  # ARM64 (Graviton) - not just to match images built natively on Apple
+  # Silicon dev machines without cross-compiling, but because Graviton
+  # Fargate pricing is itself lower per vCPU/GB-hour than x86_64 - a
+  # second, free cost-control win alongside COST.md's others.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
       name = "app"

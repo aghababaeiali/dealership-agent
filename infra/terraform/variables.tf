@@ -35,21 +35,39 @@ variable "az_count" {
 # conversation turn (once in the main API process, once again in the
 # per-turn MCP tool-server subprocess - see agents/mcp_session.py), and
 # torch's own baseline memory footprint alone is a meaningful fraction of
-# 512 MB even before any model weights or FastAPI/uvicorn overhead. 256
-# CPU units / 1024 MB is the smallest pairing Fargate offers that leaves
-# real headroom instead of guaranteeing an OOM-kill crash loop - tune
-# down further only after observing real CloudWatch memory metrics from
-# an actual deployment.
+# 512 MB even before any model weights or FastAPI/uvicorn overhead.
+#
+# Step 12's live deployment showed 256 CPU units is not enough either:
+# /readyz's MCP subprocess spawn (a fresh `python -m
+# dealership_agent.tools.server`, importing torch/sqlalchemy/mcp) plus
+# the main uvicorn process contending for a single 0.25 vCPU routinely
+# took longer than the ALB health check's 5s timeout, so the service
+# could never stabilize. 512 CPU units (0.5 vCPU) still wasn't enough:
+# each /readyz call spawns a brand-new subprocess with no reuse, and
+# under 0.5 vCPU, overlapping health-check-triggered spawns (ALB checks
+# from multiple AZs, plus the interval being shorter than one spawn's
+# import+handshake time) piled up and starved each other of CPU, so none
+# of them ever finished the stdio handshake at all. 1024 CPU units (1
+# full vCPU) gives each spawn enough isolated time to actually complete -
+# confirmed against a real deployment, not a guess.
 variable "task_cpu" {
-  description = "Fargate task vCPU units (256 = 0.25 vCPU)."
+  description = "Fargate task vCPU units (1024 = 1 vCPU)."
   type        = number
-  default     = 256
+  default     = 1024
 }
 
+# 1024 MB turned out to be a real OOM, not just a tight fit: every real
+# deployment task was SIGKILLed (exit 137) 6-8 minutes in. Root cause -
+# the main uvicorn process AND each per-readyz-call / per-conversation-
+# turn MCP subprocess each load their own full copy of the
+# sentence-transformers model into memory (see agents/mcp_session.py) -
+# with the health check spawning a fresh subprocess every 20s, that's a
+# lot of concurrent torch runtimes stacking up against a 1GB ceiling.
+# 2048 MB confirmed stable against a real deployment.
 variable "task_memory" {
   description = "Fargate task memory in MB."
   type        = number
-  default     = 1024
+  default     = 2048
 }
 
 variable "container_port" {
