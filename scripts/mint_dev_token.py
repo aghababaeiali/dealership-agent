@@ -107,9 +107,20 @@ def main() -> None:
     parser.add_argument(
         "--expires-minutes", type=int, default=settings.jwt_access_token_expire_minutes
     )
+    parser.add_argument(
+        "--skip-db-check",
+        action="store_true",
+        help=(
+            "Skip creating/checking the customer row. For minting a token against "
+            "a database this machine can't reach directly (e.g. RDS in a private "
+            "subnet - see docs/DEPLOYMENT.md) when the customer is already known "
+            "to exist, created via a one-off in-VPC task instead."
+        ),
+    )
     args = parser.parse_args()
 
-    _ensure_customer_exists(settings.database_migration_url, args.customer_id)
+    if not args.skip_db_check:
+        _ensure_customer_exists(settings.database_migration_url, args.customer_id)
 
     private_path = Path(settings.jwt_private_key_path or DEFAULT_PRIVATE_KEY_PATH)
     public_path = Path(settings.jwt_public_key_path or DEFAULT_PUBLIC_KEY_PATH)
