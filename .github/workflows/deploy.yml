@@ -1,0 +1,81 @@
+name: Deploy
+
+# Step 11, Part C2: manual dispatch ONLY - never on push. A deploy is a
+# real-money, real-production action against a live ECS service; it
+# should never happen as a side effect of merging code, only when a
+# human deliberately triggers it. See docs/DEPLOYMENT.md Part C for
+# exactly what must be configured (repository variables, IAM role) before
+# this workflow can run at all - it is NOT enabled out of the box.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm you intend to deploy to the live environment'
+        required: true
+
+permissions:
+  id-token: write # required for OIDC - see infra/terraform/oidc.tf
+  contents: read
+
+jobs:
+  deploy:
+    if: github.event.inputs.confirm == 'deploy'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject unconfirmed dispatch
+        if: github.event.inputs.confirm != 'deploy'
+        run: |
+          echo "::error::confirm input must be exactly 'deploy' - aborting."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      # No long-lived AWS keys anywhere (CLAUDE.md) - this assumes
+      # infra/terraform/oidc.tf's deploy role via GitHub's own OIDC
+      # token, scoped to this repository only.
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}" \
+            --query taskDefinition > task-definition.json
+
+      - name: Render new task definition with the new image
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Register the new task definition and update the service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE_NAME }}
+          cluster: ${{ vars.ECS_CLUSTER_NAME }}
+          # Blocks the job until ECS reports the new deployment stable
+          # (equivalent to `aws ecs wait services-stable`) - a failed
+          # deploy fails this job loudly, rather than reporting success
+          # the instant the API call was accepted.
+          wait-for-service-stability: true
