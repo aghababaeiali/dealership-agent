@@ -1,5 +1,12 @@
 # dealership-agent
 
+[![CI](https://github.com/aghababaeiali/dealership-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/aghababaeiali/dealership-agent/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/release/python-3120/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![mypy: strict](https://img.shields.io/badge/mypy-strict-blue)](https://mypy.readthedocs.io/en/stable/getting_started.html#strict-mode-and-configuration)
+[![Tests](https://img.shields.io/badge/tests-116-blue)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-79%25-yellowgreen)](.github/workflows/ci.yml)
+
 An agentic AI customer-service assistant for a used-car dealership: a
 LangGraph supervisor routes each customer message to one or two
 permission-scoped sub-agents, which call tools through an MCP server
@@ -9,6 +16,20 @@ approach to building agentic systems: the core design question this
 project answers is not "can the agent find a car?" but "can the LLM ever
 be tricked into reading someone else's data?" The answer is structurally
 no, not just prompted-to-refuse.
+
+![Live AWS deployment demo: healthz/readyz checks, a catalog search, an authenticated order lookup, the cross-customer security boundary, and the action-claim verifier, all run against the deployed ECS Fargate service](docs/assets/demo.gif)
+
+*Running against the live deployment at
+`dealership-agent-production-1398206561.eu-west-1.elb.amazonaws.com`
+(ECS Fargate, eu-west-1), not localhost. In order: a catalog search
+against the real seeded listings, an authenticated order lookup, the
+cross-customer security boundary check (customer 501 asking for customer
+502's order, correctly refused), and the action-claim verifier declining
+to falsely confirm a cancellation no tool can actually perform. See
+[Deployed to AWS](#deployed-to-aws) below for the full account,
+including the CloudWatch evidence and the two bugs this live run
+surfaced. Recorded with [`scripts/aws_demo.sh`](scripts/aws_demo.sh)
+against infrastructure that has since been torn down.*
 
 See [CLAUDE.md](CLAUDE.md) for the full set of locked architecture
 decisions and engineering standards this project is built to, and
