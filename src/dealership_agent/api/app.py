@@ -5,6 +5,7 @@ through.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -43,6 +44,11 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _check_database() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/readyz")
 async def readyz(response: Response) -> dict[str, object]:
     """Readiness: checks the DB and the MCP tool server can actually be
@@ -51,8 +57,15 @@ async def readyz(response: Response) -> dict[str, object]:
     healthy = True
 
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        # engine.connect() is sync (blocking) I/O - run it off the event
+        # loop. Without this, a slow connection (cold pool, pool_pre_ping's
+        # extra round trip) blocks the ENTIRE single-worker event loop,
+        # which also delays this same request's MCP subprocess handshake
+        # below and any concurrently-arriving request (e.g. the ALB's own
+        # health checks land from multiple AZs near-simultaneously) - Step
+        # 12's live deployment never once passed its health check until
+        # this was fixed, no matter how much CPU/timeout budget was given.
+        await asyncio.to_thread(_check_database)
         checks["database"] = "ok"
     except Exception as exc:  # noqa: BLE001 -- readiness must report, never raise
         checks["database"] = f"error: {exc}"
