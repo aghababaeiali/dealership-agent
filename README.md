@@ -281,3 +281,52 @@ and [`infra/terraform/COST.md`](infra/terraform/COST.md) for the
 per-resource cost breakdown — read that one first, since this
 deployment costs real money the moment it's applied (roughly $45-50/month
 if left running).
+
+### Deployed to AWS
+
+This project has been deployed and verified against real AWS
+infrastructure, not just planned on paper: 42 resources in `eu-west-1`
+(ECS Fargate running the app, RDS Postgres+pgvector in a private subnet,
+an ALB, ECR, IAM roles, SSM parameters, VPC/subnets/security groups) via
+`terraform apply`, seeded with real vehicle listings and policy
+embeddings, then torn down again (`terraform destroy`) once verification
+was complete — see the teardown section of `docs/DEPLOYMENT.md`.
+
+**The security boundary held under live conditions.** With two seeded
+customers, customer A's authenticated `/chat` request for customer B's
+order came back "not found" instead of leaking it. This was confirmed at
+two independent layers, not just the chat response text: CloudWatch logs
+for the tool call itself show the database query returned `row_count: 0`
+for the cross-customer request versus `row_count: 1` for the same
+customer asking about their own order — proof the Row-Level Security
+policy is what's rejecting the query, not an application-level filter
+that happened to return the right answer.
+
+**Two real bugs only surfaced under live deployment, not local testing:**
+
+- `/readyz` made a synchronous, blocking database call inside an async
+  FastAPI handler. Locally, single sequential requests never exposed
+  this. Behind a real ALB, health checks arrive from multiple
+  availability zones near-simultaneously, and the blocking call stalled
+  the single-worker event loop long enough that the service could never
+  pass its own health check, regardless of how much CPU or timeout
+  budget it was given. Fixed by running the check via
+  `asyncio.to_thread`.
+- The Bedrock IAM policy scoped the foundation-model resource ARN to a
+  single region. Cross-region ("`eu.`"-prefixed) inference profiles
+  don't guarantee the underlying request lands in that region — a live
+  call actually routed to `eu-north-1` instead of the configured
+  `eu-west-1`, and AWS checks the foundation-model resource against
+  whichever region the request lands in, not the caller's own region.
+  IAM policies for cross-region inference profiles are a real deployment
+  concern that a local Bedrock call (or a unit test) with a single fixed
+  region would never exercise.
+
+Both are the kind of concurrency- and region-routing bugs that only show
+up under actual multi-AZ, load-balanced, cross-region conditions — the
+reason "verify against a real deployment" is its own step, not assumed
+from a clean `terraform apply` and a passing test suite.
+
+Cost while live: roughly $45-50/month if left running (see
+`infra/terraform/COST.md`); this deployment was torn down immediately
+after verification, so actual spend was a small fraction of that.
