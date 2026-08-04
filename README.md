@@ -6,6 +6,7 @@
 [![mypy: strict](https://img.shields.io/badge/mypy-strict-blue)](https://mypy.readthedocs.io/en/stable/getting_started.html#strict-mode-and-configuration)
 [![Tests](https://img.shields.io/badge/tests-116-blue)](tests/)
 [![Coverage](https://img.shields.io/badge/coverage-79%25-yellowgreen)](.github/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 An agentic AI customer-service assistant for a used-car dealership: a
 LangGraph supervisor routes each customer message to one or two
